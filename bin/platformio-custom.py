@@ -181,3 +181,6 @@ def load_boot_logo(source, target, env):
 # Load the boot logo on TFT builds
 if ("HAS_TFT", 1) in env.get("CPPDEFINES", []):
     env.AddPreAction('$BUILD_DIR/littlefs.bin', load_boot_logo)
+
+# Load LoBBS protobuf generation script
+env.SConscript("../extra_scripts/gen_lobbs_proto.py", exports="env")
