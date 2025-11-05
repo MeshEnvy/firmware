@@ -115,7 +115,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
             snprintf(helpMsg, sizeof(helpMsg), 
                      "LoBBS Commands:\n"
                      "/bye - Logout\n"
-                     "/users <filter> - List users\n"
+                     "/users [filter] - List users (optional filter)\n"
                      "/mail - Mail (soon)\n"
                      "/news - News (soon)\n"
                      "/help - Show help");
@@ -160,21 +160,12 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
             return ProcessMessage::CONTINUE;
         }
         
-        // Parse filter argument
-        char filter[33];
-        if (!parser.nextWord(filter, sizeof(filter))) {
-            sendTextReply(mp.from, "Usage: /users <filter>");
-            return ProcessMessage::CONTINUE;
-        }
+        // Parse optional filter argument
+        char filter[33] = "";
+        parser.nextWord(filter, sizeof(filter)); // Optional, may be empty
         
-        // Validate filter
-        size_t filterLen = strlen(filter);
-        if (filterLen < 2) {
-            sendTextReply(mp.from, "Filter must be at least 2 characters");
-            return ProcessMessage::CONTINUE;
-        }
-        
-        if (!isValidUsername(filter)) {
+        // Validate filter if provided
+        if (filter[0] != '\0' && !isValidUsername(filter)) {
             sendTextReply(mp.from, "Filter contains invalid characters");
             return ProcessMessage::CONTINUE;
         }
@@ -188,7 +179,11 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
         
         if (results.empty()) {
             char noMatchMsg[64];
-            snprintf(noMatchMsg, sizeof(noMatchMsg), "No users match '%s'", filter);
+            if (filter[0] != '\0') {
+                snprintf(noMatchMsg, sizeof(noMatchMsg), "No users match '%s'", filter);
+            } else {
+                snprintf(noMatchMsg, sizeof(noMatchMsg), "No users found");
+            }
             sendTextReply(mp.from, noMatchMsg);
             return ProcessMessage::CONTINUE;
         }
