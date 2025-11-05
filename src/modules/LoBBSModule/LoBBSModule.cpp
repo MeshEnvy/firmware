@@ -95,10 +95,10 @@ bool LoBBSModule::loadUserByNodeId(uint32_t nodeId, meshtastic_LoBBSUser *user)
     // Now load the user by UUID from session
     err = lodb_get(&usersTable, session.user_uuid, user);
     if (err == LODB_OK) {
-        LOG_DEBUG("Loaded user by node ID: 0x%08x -> UUID: %016llx", nodeId, (unsigned long long)session.user_uuid);
+        LOG_DEBUG("Loaded user by node ID: 0x%08x -> UUID: " LODB_UUID_FMT, nodeId, LODB_UUID_ARGS(session.user_uuid));
         return true;
     }
-    LOG_DEBUG("User UUID not found: %016llx", (unsigned long long)session.user_uuid);
+    LOG_DEBUG("User UUID not found: " LODB_UUID_FMT, LODB_UUID_ARGS(session.user_uuid));
     return false;
 }
 
@@ -153,7 +153,7 @@ bool LoBBSModule::loginUser(const char *username, uint32_t nodeId)
         return false;
     }
     
-    LOG_INFO("Created session for user %s (UUID: %016llx) on node 0x%08x", username, (unsigned long long)session.user_uuid, nodeId);
+    LOG_INFO("Created session for user %s (UUID: " LODB_UUID_FMT ") on node 0x%08x", username, LODB_UUID_ARGS(session.user_uuid), nodeId);
     return true;
 }
 

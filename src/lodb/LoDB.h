@@ -20,6 +20,10 @@
 // UUID type - 64-bit unsigned integer
 typedef uint64_t lodb_uuid_t;
 
+// UUID formatting macros for platforms without %llx support
+#define LODB_UUID_FMT "%08x%08x"
+#define LODB_UUID_ARGS(uuid) (uint32_t)((uuid) >> 32), (uint32_t)((uuid) & 0xFFFFFFFF)
+
 /**
  * Error codes returned by LoDB operations
  */

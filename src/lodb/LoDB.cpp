@@ -40,7 +40,7 @@ struct LoDbCursor {
 // Convert UUID to 16-character hex string
 void lodb_uuid_to_hex(lodb_uuid_t uuid, char hex_out[17])
 {
-    snprintf(hex_out, 17, "%016llx", (unsigned long long)uuid);
+    snprintf(hex_out, 17, LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
 }
 
 // Generate or derive a UUID
@@ -129,7 +129,7 @@ LoDbError lodb_insert(LoDbTable *table, lodb_uuid_t uuid, const void *record)
         auto existing = FSCom.open(file_path, FILE_O_READ);
         if (existing) {
             existing.close();
-            LOG_ERROR("UUID already exists: %016llx", (unsigned long long)uuid);
+            LOG_ERROR("UUID already exists: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
             return LODB_ERR_INVALID;
         }
     }
@@ -167,7 +167,7 @@ LoDbError lodb_insert(LoDbTable *table, lodb_uuid_t uuid, const void *record)
         LOG_DEBUG("Wrote record to: %s (%d bytes)", file_path, encoded_size);
     }
 
-    LOG_INFO("Inserted record with custom UUID: %016llx", (unsigned long long)uuid);
+    LOG_INFO("Inserted record with custom UUID: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
     return LODB_OK;
 #else
     LOG_ERROR("Filesystem not available");
@@ -199,7 +199,7 @@ LoDbError lodb_get(LoDbTable *table, lodb_uuid_t uuid, void *record_out)
         concurrency::LockGuard g(spiLock);
         auto file = FSCom.open(file_path, FILE_O_READ);
         if (!file) {
-            LOG_DEBUG("Record not found: %016llx", (unsigned long long)uuid);
+            LOG_DEBUG("Record not found: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
             return LODB_ERR_NOT_FOUND;
         }
 
@@ -207,7 +207,7 @@ LoDbError lodb_get(LoDbTable *table, lodb_uuid_t uuid, void *record_out)
         file.close();
 
         if (file_size == 0) {
-            LOG_ERROR("Record file is empty: %016llx", (unsigned long long)uuid);
+            LOG_ERROR("Record file is empty: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
             return LODB_ERR_IO;
         }
 
@@ -219,11 +219,11 @@ LoDbError lodb_get(LoDbTable *table, lodb_uuid_t uuid, void *record_out)
     memset(record_out, 0, table->record_size);
 
     if (!pb_decode(&stream, table->pb_descriptor, record_out)) {
-        LOG_ERROR("Failed to decode protobuf from %016llx", (unsigned long long)uuid);
+        LOG_ERROR("Failed to decode protobuf from " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
         return LODB_ERR_DECODE;
     }
 
-    LOG_DEBUG("Retrieved record: %016llx", (unsigned long long)uuid);
+    LOG_DEBUG("Retrieved record: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
     return LODB_OK;
 #else
     LOG_ERROR("Filesystem not available");
@@ -252,7 +252,7 @@ LoDbError lodb_update(LoDbTable *table, lodb_uuid_t uuid, const void *record)
         concurrency::LockGuard g(spiLock);
         auto file = FSCom.open(file_path, FILE_O_READ);
         if (!file) {
-            LOG_DEBUG("Record not found for update: %016llx", (unsigned long long)uuid);
+            LOG_DEBUG("Record not found for update: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
             return LODB_ERR_NOT_FOUND;
         }
         file.close();
@@ -263,7 +263,7 @@ LoDbError lodb_update(LoDbTable *table, lodb_uuid_t uuid, const void *record)
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
 
     if (!pb_encode(&stream, table->pb_descriptor, record)) {
-        LOG_ERROR("Failed to encode updated record: %016llx", (unsigned long long)uuid);
+        LOG_ERROR("Failed to encode updated record: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
         return LODB_ERR_ENCODE;
     }
 
@@ -290,7 +290,7 @@ LoDbError lodb_update(LoDbTable *table, lodb_uuid_t uuid, const void *record)
         file.close();
     }
 
-    LOG_INFO("Updated record: %016llx", (unsigned long long)uuid);
+    LOG_INFO("Updated record: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
     return LODB_OK;
 #else
     LOG_ERROR("Filesystem not available");
@@ -316,10 +316,10 @@ LoDbError lodb_delete(LoDbTable *table, lodb_uuid_t uuid)
     {
         concurrency::LockGuard g(spiLock);
         if (FSCom.remove(file_path)) {
-            LOG_DEBUG("Deleted record: %016llx", (unsigned long long)uuid);
+            LOG_DEBUG("Deleted record: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
             return LODB_OK;
         } else {
-            LOG_WARN("Failed to delete record (may not exist): %016llx", (unsigned long long)uuid);
+            LOG_WARN("Failed to delete record (may not exist): " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
             return LODB_ERR_NOT_FOUND;
         }
     }
@@ -447,23 +447,25 @@ bool lodb_cursor_next(LoDbCursor *cursor)
     
     // Parse hex string to uint64_t UUID
     lodb_uuid_t uuid;
-    if (sscanf(uuid_hex_str.c_str(), "%016llx", (unsigned long long*)&uuid) != 1) {
+    uint32_t high, low;
+    if (sscanf(uuid_hex_str.c_str(), "%08x%08x", &high, &low) != 2) {
         LOG_WARN("Failed to parse UUID from filename: %s", uuid_hex_str.c_str());
         return false; // Caller will call again for next file
     }
+    uuid = ((uint64_t)high << 32) | (uint64_t)low;
     
     // Read and decode the record
     memset(cursor->current_record, 0, cursor->table->record_size);
     LoDbError err = lodb_get(cursor->table, uuid, cursor->current_record);
     
     if (err != LODB_OK) {
-        LOG_WARN("Failed to read record %016llx during cursor iteration", (unsigned long long)uuid);
+        LOG_WARN("Failed to read record " LODB_UUID_FMT " during cursor iteration", LODB_UUID_ARGS(uuid));
         return false; // Caller will call again for next file
     }
 
     // Apply filter if provided
     if (cursor->filter && !cursor->filter(cursor->current_record, cursor->filter_context)) {
-        LOG_DEBUG("Record %016llx filtered out", (unsigned long long)uuid);
+        LOG_DEBUG("Record " LODB_UUID_FMT " filtered out", LODB_UUID_ARGS(uuid));
         return false; // Doesn't match, caller will call again
     }
 
@@ -471,7 +473,7 @@ bool lodb_cursor_next(LoDbCursor *cursor)
     cursor->current_uuid = uuid;
     cursor->has_current = true;
     
-    LOG_DEBUG("Cursor found matching record: %016llx", (unsigned long long)cursor->current_uuid);
+    LOG_DEBUG("Cursor found matching record: " LODB_UUID_FMT, LODB_UUID_ARGS(cursor->current_uuid));
     return true; // Match found!
 #else
     cursor->dir_exhausted = true;
