@@ -3,18 +3,20 @@
 # trunk-ignore-all(flake8/F821): For SConstruct imports
 """
 Custom build script to generate LoBBS protobuf files
+Can be run standalone or imported by platformio-custom.py
 """
 import os
 import subprocess
 import sys
 
-Import("env")
-
-def generate_lobbs_protobufs(source, target, env):
+def generate_lobbs_protobufs(source=None, target=None, env=None):
     """Generate LoBBS protobuf C++ files using nanopb"""
     
-    project_dir = env.get("PROJECT_DIR")
-    lobbs_module_dir = os.path.join(project_dir, "src", "modules", "LoBBSModule")
+    # Script is now in src/modules/LoBBSModule, so we can determine paths from here
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    lobbs_module_dir = script_dir
+    # Go up 3 levels to get to project root: LoBBSModule -> modules -> src -> project_root
+    project_dir = os.path.dirname(os.path.dirname(os.path.dirname(script_dir)))
     proto_file = os.path.join(lobbs_module_dir, "lobbs.proto")
     options_file = os.path.join(lobbs_module_dir, "lobbs.options")
     nanopb_dir = os.path.join(project_dir, "nanopb-0.4.9")
@@ -102,8 +104,18 @@ def generate_lobbs_protobufs(source, target, env):
     finally:
         os.chdir(original_dir)
 
-# Add pre-build action to generate protobuf files
-env.AddPreAction("$BUILD_DIR/src/modules/LoBBSModule/LoBBSModule.cpp.o", generate_lobbs_protobufs)
+# When run as a standalone script
+if __name__ == "__main__":
+    print("Running LoBBS protobuf generator in standalone mode...")
+    generate_lobbs_protobufs()
+    sys.exit(0)
 
-print("LoBBS protobuf generation script loaded")
-
+# When imported by platformio-custom.py as an SConscript
+try:
+    Import("env")
+    # Add pre-build action to generate protobuf files
+    env.AddPreAction("$BUILD_DIR/src/modules/LoBBSModule/LoBBSModule.cpp.o", generate_lobbs_protobufs)
+    print("LoBBS protobuf generation script loaded")
+except:
+    # Not running as an SConscript, ignore
+    pass
