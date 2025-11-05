@@ -2,6 +2,9 @@
 
 #include "SinglePortModule.h"
 #include "LoBBSDb.h"
+#include "TextMessageSender.h"
+#include <vector>
+#include <string>
 
 /**
  * LoBBS (Lo-Fi Bulletin Board System) Module
@@ -22,6 +25,7 @@ class LoBBSModule : public SinglePortModule
 
   private:
     LoBBSDb *db;
+    TextMessageSender *messageSender;
 
     /**
      * Validate username format
@@ -34,8 +38,13 @@ class LoBBSModule : public SinglePortModule
     bool isValidPassword(const char *password);
 
     /**
-     * Send a text reply to a node
+     * Send a text reply to a node (immediate, single message)
      */
     void sendTextReply(uint32_t toNode, const char *message);
+
+    /**
+     * Send a potentially large message (queued, auto-fragmented)
+     */
+    void sendLargeMessage(uint32_t toNode, const std::string &message);
 };
 

@@ -2,6 +2,8 @@
 
 #include "lobbs.pb.h"
 #include <cstdint>
+#include <vector>
+#include <string>
 
 /**
  * LoBBSDb - Database operations for LoBBS user management
@@ -77,6 +79,14 @@ class LoBBSDb
      * @return 32-bit user ID
      */
     static uint32_t generateUidFromUsername(const char *username);
+
+    /**
+     * List all usernames matching a filter
+     * @param filter Filter string (case-insensitive substring match)
+     * @param results Output: sorted list of matching usernames
+     * @return true if operation succeeded (even if no matches found)
+     */
+    bool listUsers(const char *filter, std::vector<std::string> &results);
 
   private:
     // Filesystem paths

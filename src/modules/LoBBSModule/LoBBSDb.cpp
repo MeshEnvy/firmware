@@ -7,6 +7,8 @@
 #include <pb_decode.h>
 #include <pb_encode.h>
 #include <cstring>
+#include <algorithm>
+#include <cctype>
 
 LoBBSDb::LoBBSDb()
 {
@@ -306,6 +308,76 @@ bool LoBBSDb::logoutNodeId(uint32_t nodeId)
         LOG_WARN("Failed to remove node ID index for 0x%0x", nodeId);
         return false;
     }
+#else
+    LOG_ERROR("Filesystem not available");
+    return false;
+#endif
+}
+
+bool LoBBSDb::listUsers(const char *filter, std::vector<std::string> &results)
+{
+#ifdef FSCom
+    results.clear();
+    
+    // Convert filter to lowercase for case-insensitive comparison
+    std::string filterLower = filter;
+    std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(), 
+                   [](unsigned char c){ return std::tolower(c); });
+    
+    concurrency::LockGuard g(spiLock);
+    
+    // Open username index directory
+    File root = FSCom.open(LOBBS_INDEX_USERNAME_DIR, FILE_O_READ);
+    if (!root) {
+        LOG_DEBUG("Username index directory not found");
+        return true; // Not an error, just no users yet
+    }
+    
+    if (!root.isDirectory()) {
+        LOG_ERROR("Username index path is not a directory");
+        root.close();
+        return false;
+    }
+    
+    // Iterate through all username index files
+    File file = root.openNextFile();
+    while (file) {
+        if (!file.isDirectory()) {
+            // Get filename (might be full path on ESP32, just name on others)
+            const char *fullPath = file.name();
+            std::string pathStr = fullPath;
+            
+            // Extract just the filename (after last /)
+            size_t lastSlash = pathStr.rfind('/');
+            std::string filename = (lastSlash != std::string::npos) ? 
+                                   pathStr.substr(lastSlash + 1) : pathStr;
+            
+            // Extract username (remove .pbin extension)
+            size_t pbinPos = filename.find(".pbin");
+            if (pbinPos != std::string::npos) {
+                std::string username = filename.substr(0, pbinPos);
+                
+                // Apply filter (case-insensitive substring match)
+                std::string usernameLower = username;
+                std::transform(usernameLower.begin(), usernameLower.end(), usernameLower.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                
+                if (usernameLower.find(filterLower) != std::string::npos) {
+                    results.push_back(username);
+                    LOG_DEBUG("Found matching user: %s (from file: %s)", username.c_str(), filename.c_str());
+                }
+            }
+        }
+        file.close();
+        file = root.openNextFile();
+    }
+    root.close();
+    
+    // Sort results alphabetically
+    std::sort(results.begin(), results.end());
+    
+    LOG_INFO("Found %d users matching filter '%s'", results.size(), filter);
+    return true;
 #else
     LOG_ERROR("Filesystem not available");
     return false;

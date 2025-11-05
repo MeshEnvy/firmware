@@ -2,13 +2,20 @@
 #include "CommandParser.h"
 #include "MeshService.h"
 #include "configuration.h"
+#include "airtime.h"
 
 #include <assert.h>
 #include <cctype>
 
-LoBBSModule::LoBBSModule() : SinglePortModule("LoBBS", meshtastic_PortNum_TEXT_MESSAGE_APP)
+LoBBSModule::LoBBSModule() 
+    : SinglePortModule("LoBBS", meshtastic_PortNum_TEXT_MESSAGE_APP)
 {
     db = new LoBBSDb();
+    
+    // Create message sender with callback to send replies
+    messageSender = new TextMessageSender([this](uint32_t nodeId, const char *message) {
+        this->sendTextReply(nodeId, message);
+    });
 }
 
 bool LoBBSModule::isValidUsername(const char *username)
@@ -50,6 +57,11 @@ void LoBBSModule::sendTextReply(uint32_t toNode, const char *message)
     
     LOG_INFO("Sending LoBBS reply to 0x%0x: %s", toNode, message);
     service->sendToMesh(reply, RX_SRC_LOCAL, true);
+}
+
+void LoBBSModule::sendLargeMessage(uint32_t toNode, const std::string &message)
+{
+    messageSender->send(toNode, message); // TextMessageSender wakes its own thread
 }
 
 ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
@@ -103,9 +115,10 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
             snprintf(helpMsg, sizeof(helpMsg), 
                      "LoBBS Commands:\n"
                      "/bye - Logout\n"
-                     "/mail - Read mail (coming soon)\n"
-                     "/news - Read news (coming soon)\n"
-                     "/help - Show this help");
+                     "/users <filter> - List users\n"
+                     "/mail - Mail (soon)\n"
+                     "/news - News (soon)\n"
+                     "/help - Show help");
         } else {
             snprintf(helpMsg, sizeof(helpMsg), 
                      "LoBBS - LoRa BBS\n"
@@ -133,6 +146,64 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
         } else {
             sendTextReply(mp.from, "You are not logged in");
         }
+        
+        return ProcessMessage::CONTINUE;
+    }
+    
+    if (strcmp(cmdName, "users") == 0) {
+        LOG_INFO("Processing /users command from node=0x%0x", mp.from);
+        
+        // Check authentication
+        meshtastic_LoBBSUser user = meshtastic_LoBBSUser_init_zero;
+        if (!db->loadUserByNodeId(mp.from, &user)) {
+            sendTextReply(mp.from, "You must be logged in to use /users");
+            return ProcessMessage::CONTINUE;
+        }
+        
+        // Parse filter argument
+        char filter[33];
+        if (!parser.nextWord(filter, sizeof(filter))) {
+            sendTextReply(mp.from, "Usage: /users <filter>");
+            return ProcessMessage::CONTINUE;
+        }
+        
+        // Validate filter
+        size_t filterLen = strlen(filter);
+        if (filterLen < 2) {
+            sendTextReply(mp.from, "Filter must be at least 2 characters");
+            return ProcessMessage::CONTINUE;
+        }
+        
+        if (!isValidUsername(filter)) {
+            sendTextReply(mp.from, "Filter contains invalid characters");
+            return ProcessMessage::CONTINUE;
+        }
+        
+        // Get user list
+        std::vector<std::string> results;
+        if (!db->listUsers(filter, results)) {
+            sendTextReply(mp.from, "Error reading user directory");
+            return ProcessMessage::CONTINUE;
+        }
+        
+        if (results.empty()) {
+            char noMatchMsg[64];
+            snprintf(noMatchMsg, sizeof(noMatchMsg), "No users match '%s'", filter);
+            sendTextReply(mp.from, noMatchMsg);
+            return ProcessMessage::CONTINUE;
+        }
+        
+        // Build user directory message
+        std::string userListMsg = "User directory: ";
+        for (size_t i = 0; i < results.size(); i++) {
+            if (i > 0) {
+                userListMsg += ", ";
+            }
+            userListMsg += results[i];
+        }
+        
+        // Send using message sender (will auto-fragment)
+        sendLargeMessage(mp.from, userListMsg);
         
         return ProcessMessage::CONTINUE;
     }
@@ -233,4 +304,3 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
     
     return ProcessMessage::CONTINUE;
 }
-
