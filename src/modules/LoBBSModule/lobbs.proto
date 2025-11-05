@@ -11,6 +11,7 @@ option swift_prefix = "";
 /*
  * LoBBS User Record
  * Stores user authentication information for the LoBBS system
+ * UUID: username (for direct lookups)
  */
 message LoBBSUser {
   /*
@@ -27,5 +28,27 @@ message LoBBSUser {
    * User ID - deterministic hash derived from username
    */
   uint32 uid = 3;
+}
+
+/*
+ * LoBBS Session Record
+ * Maps node IDs to logged-in user UUIDs
+ * UUID: node ID as uint64
+ */
+message LoBBSSession {
+  /*
+   * User UUID of the logged-in user
+   */
+  uint64 user_uuid = 1;
+
+  /*
+   * Last login timestamp
+   */
+  uint32 last_login_time = 2;
+
+  /*
+   * Node ID (stored for reference)
+   */
+  uint32 node_id = 3;
 }
 

@@ -54,13 +54,7 @@ int32_t OSThreadWorkerPool::runOnce()
     workers.pop_front();
     
     // Execute it
-    bool isComplete = false;
-    try {
-        isComplete = worker();
-    } catch (...) {
-        LOG_ERROR("Worker threw exception, removing from pool");
-        isComplete = true; // Remove it
-    }
+    bool isComplete = worker();
     
     // If not complete, add it back to the end of the queue
     if (!isComplete) {

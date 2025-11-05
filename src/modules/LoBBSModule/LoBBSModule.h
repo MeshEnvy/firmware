@@ -1,8 +1,10 @@
 #pragma once
 
 #include "SinglePortModule.h"
-#include "LoBBSDb.h"
+#include "lodb/LoDB.h"
 #include "TextMessageSender.h"
+#include "concurrency/OSThreadWorkerPool.h"
+#include "lobbs.pb.h"
 #include <vector>
 #include <string>
 
@@ -11,6 +13,10 @@
  * 
  * A simple BBS-style messaging system for Meshtastic.
  * Handles text messages on TEXT_MESSAGE_APP port.
+ * 
+ * Uses LoDB for storage:
+ * - Users table: /lodb/lobbs_users/<username>.pr
+ * - Sessions table: /lodb/lobbs_sessions/<nodeid_hex>.pr
  */
 class LoBBSModule : public SinglePortModule
 {
@@ -24,8 +30,15 @@ class LoBBSModule : public SinglePortModule
     virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
 
   private:
-    LoBBSDb *db;
+    // LoDB tables
+    LoDbTable usersTable;
+    LoDbTable sessionsTable;
+    
     TextMessageSender *messageSender;
+    concurrency::OSThreadWorkerPool *workerPool;
+    
+    // Host node ID used as salt for user UUID generation
+    uint32_t hostNodeId;
 
     /**
      * Validate username format
@@ -36,6 +49,41 @@ class LoBBSModule : public SinglePortModule
      * Validate password format
      */
     bool isValidPassword(const char *password);
+    
+    /**
+     * Load user by username from LoDB
+     */
+    bool loadUserByUsername(const char *username, meshtastic_LoBBSUser *user);
+    
+    /**
+     * Load user by node ID (via session lookup)
+     */
+    bool loadUserByNodeId(uint32_t nodeId, meshtastic_LoBBSUser *user);
+    
+    /**
+     * Create a new user account
+     */
+    bool createUser(const char *username, const char *password, uint32_t nodeId);
+    
+    /**
+     * Verify password for a user
+     */
+    bool verifyPassword(const meshtastic_LoBBSUser *user, const char *password);
+    
+    /**
+     * Log in a user (create session)
+     */
+    bool loginUser(const char *username, uint32_t nodeId);
+    
+    /**
+     * Log out a user (delete session)
+     */
+    bool logoutUser(uint32_t nodeId);
+    
+    /**
+     * Hash a password using SHA256
+     */
+    static void hashPassword(const char *password, uint8_t *hash);
 
     /**
      * Send a text reply to a node (immediate, single message)

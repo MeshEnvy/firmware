@@ -17,8 +17,8 @@
  * - Operations yield control between records for true cooperative multitasking
  */
 
-// UUID length (12 hex chars + null terminator)
-#define LODB_UUID_LEN 13
+// UUID type - 64-bit unsigned integer
+typedef uint64_t lodb_uuid_t;
 
 /**
  * Error codes returned by LoDB operations
@@ -67,19 +67,28 @@ typedef struct LoDbCursor LoDbCursor;
 LoDbError lodb_init_table(LoDbTable *table, const char *table_name, const pb_msgdesc_t *pb_descriptor, size_t record_size);
 
 /**
- * Generate a unique 12-character hex UUID
- * @param uuid_out Buffer to store UUID (must be at least LODB_UUID_LEN bytes)
+ * Convert UUID to 16-character hex string for filenames
+ * @param uuid UUID to convert
+ * @param hex_out Buffer to store hex string (must be at least 17 bytes for null terminator)
  */
-void lodb_generate_uuid(char *uuid_out);
+void lodb_uuid_to_hex(lodb_uuid_t uuid, char hex_out[17]);
 
 /**
- * Insert a new record with auto-generated UUID
- * @param table Table to insert into
- * @param record Pointer to the protobuf record to insert
- * @param uuid_out Buffer to store generated UUID (must be at least LODB_UUID_LEN bytes)
- * @return LODB_OK on success, error code otherwise
+ * Generate or derive a UUID
+ * @param str String to hash into UUID (NULL for auto-generated)
+ * @param salt Optional salt value (0 for none, typically node ID for user-specific UUIDs)
+ * @return 64-bit UUID - auto-generated if str is NULL, otherwise SHA256(str + salt)
  */
-LoDbError lodb_insert(LoDbTable *table, const void *record, char *uuid_out);
+lodb_uuid_t lodb_new_uuid(const char *str, uint64_t salt);
+
+/**
+ * Insert a new record with a UUID
+ * @param table Table to insert into
+ * @param uuid UUID to use for this record
+ * @param record Pointer to the protobuf record to insert
+ * @return LODB_OK on success, LODB_ERR_INVALID if UUID exists, error code otherwise
+ */
+LoDbError lodb_insert(LoDbTable *table, lodb_uuid_t uuid, const void *record);
 
 /**
  * Get a record by UUID
@@ -88,7 +97,7 @@ LoDbError lodb_insert(LoDbTable *table, const void *record, char *uuid_out);
  * @param record_out Buffer to store decoded record (must be at least table->record_size bytes)
  * @return LODB_OK on success, LODB_ERR_NOT_FOUND if UUID doesn't exist, error code otherwise
  */
-LoDbError lodb_get(LoDbTable *table, const char *uuid, void *record_out);
+LoDbError lodb_get(LoDbTable *table, lodb_uuid_t uuid, void *record_out);
 
 /**
  * Update a single record by UUID
@@ -97,7 +106,7 @@ LoDbError lodb_get(LoDbTable *table, const char *uuid, void *record_out);
  * @param record Pointer to the updated protobuf record
  * @return LODB_OK on success, LODB_ERR_NOT_FOUND if UUID doesn't exist, error code otherwise
  */
-LoDbError lodb_update(LoDbTable *table, const char *uuid, const void *record);
+LoDbError lodb_update(LoDbTable *table, lodb_uuid_t uuid, const void *record);
 
 /**
  * Delete a single record by UUID
@@ -105,7 +114,7 @@ LoDbError lodb_update(LoDbTable *table, const char *uuid, const void *record);
  * @param uuid UUID of the record to delete
  * @return LODB_OK on success, LODB_ERR_NOT_FOUND if UUID doesn't exist, error code otherwise
  */
-LoDbError lodb_delete(LoDbTable *table, const char *uuid);
+LoDbError lodb_delete(LoDbTable *table, lodb_uuid_t uuid);
 
 /**
  * Create a cursor for iterating through records matching a filter
@@ -174,9 +183,9 @@ const void *lodb_cursor_get(LoDbCursor *cursor);
  * Valid only after lodb_cursor_next() returns true
  * 
  * @param cursor Cursor to query
- * @return UUID string (owned by cursor, valid until next call or close)
+ * @return UUID (owned by cursor, valid until next call or close)
  */
-const char *lodb_cursor_get_uuid(LoDbCursor *cursor);
+lodb_uuid_t lodb_cursor_get_uuid(LoDbCursor *cursor);
 
 /**
  * Close cursor and free all resources

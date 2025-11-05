@@ -12,8 +12,14 @@ import sys
 def generate_lobbs_protobufs(source=None, target=None, env=None):
     """Generate LoBBS protobuf C++ files using nanopb"""
     
-    # Script is now in src/modules/LoBBSModule, so we can determine paths from here
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Determine script directory - handle both standalone and SCons execution
+    if source and len(source) > 0:
+        # When called from SCons, use the source file path
+        source_path = str(source[0])
+        script_dir = os.path.dirname(os.path.abspath(source_path))
+    else:
+        # When run standalone, use __file__
+        script_dir = os.path.dirname(os.path.abspath(__file__))
     lobbs_module_dir = script_dir
     # Go up 3 levels to get to project root: LoBBSModule -> modules -> src -> project_root
     project_dir = os.path.dirname(os.path.dirname(os.path.dirname(script_dir)))
