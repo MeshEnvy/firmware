@@ -15,8 +15,8 @@
  * Handles text messages on TEXT_MESSAGE_APP port.
  * 
  * Uses LoDB for storage:
- * - Users table: /lodb/lobbs_users/<username>.pr
- * - Sessions table: /lodb/lobbs_sessions/<nodeid_hex>.pr
+ * - Users table: /lodb/lobbs/users/<username>.pr
+ * - Sessions table: /lodb/lobbs/sessions/<nodeid_hex>.pr
  */
 class LoBBSModule : public SinglePortModule
 {
@@ -30,9 +30,8 @@ class LoBBSModule : public SinglePortModule
     virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
 
   private:
-    // LoDB tables
-    LoDbTable usersTable;
-    LoDbTable sessionsTable;
+    // LoDB database instance
+    LoDb *db;
     
     TextMessageSender *messageSender;
     concurrency::OSThreadWorkerPool *workerPool;

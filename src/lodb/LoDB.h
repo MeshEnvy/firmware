@@ -5,11 +5,12 @@
 #include <pb.h>
 #include <vector>
 #include <string>
+#include <map>
 
 /**
  * LoDB - Cooperative Protobuf Database
  * 
- * A filesystem-based database for protobuf records stored in /lodb/<table_name>/<uuid>.pr files.
+ * A filesystem-based database for protobuf records stored in /lodb/<db_name>/<table_name>/<uuid>.pr files.
  * 
  * COOPERATIVE DESIGN:
  * - All operations work on single records at a time
@@ -37,16 +38,6 @@ typedef enum {
 } LoDbError;
 
 /**
- * Table configuration
- */
-typedef struct {
-    const char *table_name;              // Table directory name (e.g., "users")
-    const pb_msgdesc_t *pb_descriptor;   // Nanopb message descriptor
-    size_t record_size;                  // sizeof(struct) for allocation
-    char table_path[128];                // Full path: /lodb/<table_name>/
-} LoDbTable;
-
-/**
  * Filter function: returns true to select/include record
  * @param record Pointer to the decoded protobuf record
  * @param context User-provided context data
@@ -59,16 +50,6 @@ typedef bool (*LoDbFilter)(const void *record, void *context);
  * Opaque structure - use cursor functions to interact
  */
 typedef struct LoDbCursor LoDbCursor;
-
-/**
- * Initialize a table and create necessary directories
- * @param table Table structure to initialize
- * @param table_name Name of the table (directory name)
- * @param pb_descriptor Nanopb message descriptor for the protobuf type
- * @param record_size Size of the in-memory struct (sizeof)
- * @return LODB_OK on success, error code otherwise
- */
-LoDbError lodb_init_table(LoDbTable *table, const char *table_name, const pb_msgdesc_t *pb_descriptor, size_t record_size);
 
 /**
  * Convert UUID to 16-character hex string for filenames
@@ -84,61 +65,6 @@ void lodb_uuid_to_hex(lodb_uuid_t uuid, char hex_out[17]);
  * @return 64-bit UUID - auto-generated if str is NULL, otherwise SHA256(str + salt)
  */
 lodb_uuid_t lodb_new_uuid(const char *str, uint64_t salt);
-
-/**
- * Insert a new record with a UUID
- * @param table Table to insert into
- * @param uuid UUID to use for this record
- * @param record Pointer to the protobuf record to insert
- * @return LODB_OK on success, LODB_ERR_INVALID if UUID exists, error code otherwise
- */
-LoDbError lodb_insert(LoDbTable *table, lodb_uuid_t uuid, const void *record);
-
-/**
- * Get a record by UUID
- * @param table Table to read from
- * @param uuid UUID of the record to retrieve
- * @param record_out Buffer to store decoded record (must be at least table->record_size bytes)
- * @return LODB_OK on success, LODB_ERR_NOT_FOUND if UUID doesn't exist, error code otherwise
- */
-LoDbError lodb_get(LoDbTable *table, lodb_uuid_t uuid, void *record_out);
-
-/**
- * Update a single record by UUID
- * @param table Table to update
- * @param uuid UUID of the record to update
- * @param record Pointer to the updated protobuf record
- * @return LODB_OK on success, LODB_ERR_NOT_FOUND if UUID doesn't exist, error code otherwise
- */
-LoDbError lodb_update(LoDbTable *table, lodb_uuid_t uuid, const void *record);
-
-/**
- * Delete a single record by UUID
- * @param table Table to delete from
- * @param uuid UUID of the record to delete
- * @return LODB_OK on success, LODB_ERR_NOT_FOUND if UUID doesn't exist, error code otherwise
- */
-LoDbError lodb_delete(LoDbTable *table, lodb_uuid_t uuid);
-
-/**
- * Create a cursor for iterating through records matching a filter
- * This is the cooperative way to scan a table - call lodb_cursor_next() from OSThread::runOnce()
- * 
- * @param table Table to scan
- * @param filter Filter function (returns true to include record), NULL to select all
- * @param context User context passed to filter function
- * @return Cursor pointer on success, NULL on error
- * 
- * USAGE:
- *   cursor = lodb_select_cursor(&table, filter, &ctx);
- *   while (lodb_cursor_next(cursor)) {
- *       const void *record = lodb_cursor_get(cursor);
- *       const char *uuid = lodb_cursor_get_uuid(cursor);
- *       // Process one record, then return from runOnce() for cooperation
- *   }
- *   lodb_cursor_close(cursor);
- */
-LoDbCursor *lodb_select_cursor(LoDbTable *table, LoDbFilter filter, void *context);
 
 /**
  * Advance cursor to next file and check if it matches filter
@@ -196,3 +122,109 @@ lodb_uuid_t lodb_cursor_get_uuid(LoDbCursor *cursor);
  * @param cursor Cursor to close (can be NULL)
  */
 void lodb_cursor_close(LoDbCursor *cursor);
+
+/**
+ * LoDB Database Class
+ * 
+ * A database instance with a namespace. Tables within this database
+ * are stored at /lodb/{db_name}/{table_name}/
+ */
+class LoDb {
+public:
+    /**
+     * Create a new database instance
+     * @param db_name Name of the database (creates /lodb/{db_name}/ directory)
+     */
+    LoDb(const char *db_name);
+    
+    /**
+     * Destructor
+     */
+    ~LoDb();
+    
+    /**
+     * Register a table with this database
+     * @param table_name Name of the table (directory name)
+     * @param pb_descriptor Nanopb message descriptor for the protobuf type
+     * @param record_size Size of the in-memory struct (sizeof)
+     * @return LODB_OK on success, error code otherwise
+     */
+    LoDbError registerTable(const char *table_name, const pb_msgdesc_t *pb_descriptor, size_t record_size);
+    
+    /**
+     * Insert a new record with a UUID
+     * @param table_name Name of the table to insert into
+     * @param uuid UUID to use for this record
+     * @param record Pointer to the protobuf record to insert
+     * @return LODB_OK on success, LODB_ERR_INVALID if UUID exists or table not registered, error code otherwise
+     */
+    LoDbError insert(const char *table_name, lodb_uuid_t uuid, const void *record);
+    
+    /**
+     * Get a record by UUID
+     * @param table_name Name of the table to read from
+     * @param uuid UUID of the record to retrieve
+     * @param record_out Buffer to store decoded record (must be at least record_size bytes)
+     * @return LODB_OK on success, LODB_ERR_NOT_FOUND if UUID doesn't exist, error code otherwise
+     */
+    LoDbError get(const char *table_name, lodb_uuid_t uuid, void *record_out);
+    
+    /**
+     * Update a single record by UUID
+     * @param table_name Name of the table to update
+     * @param uuid UUID of the record to update
+     * @param record Pointer to the updated protobuf record
+     * @return LODB_OK on success, LODB_ERR_NOT_FOUND if UUID doesn't exist, error code otherwise
+     */
+    LoDbError update(const char *table_name, lodb_uuid_t uuid, const void *record);
+    
+    /**
+     * Delete a single record by UUID
+     * @param table_name Name of the table to delete from
+     * @param uuid UUID of the record to delete
+     * @return LODB_OK on success, LODB_ERR_NOT_FOUND if UUID doesn't exist, error code otherwise
+     */
+    LoDbError deleteRecord(const char *table_name, lodb_uuid_t uuid);
+    
+    /**
+     * Create a cursor for iterating through records matching a filter
+     * This is the cooperative way to scan a table - call lodb_cursor_next() from OSThread::runOnce()
+     * 
+     * @param table_name Name of the table to scan
+     * @param filter Filter function (returns true to include record), NULL to select all
+     * @param context User context passed to filter function
+     * @return Cursor pointer on success, NULL on error
+     * 
+     * USAGE:
+     *   cursor = db->selectCursor("users", filter, &ctx);
+     *   while (lodb_cursor_next(cursor)) {
+     *       const void *record = lodb_cursor_get(cursor);
+     *       const char *uuid = lodb_cursor_get_uuid(cursor);
+     *       // Process one record, then return from runOnce() for cooperation
+     *   }
+     *   lodb_cursor_close(cursor);
+     */
+    LoDbCursor *selectCursor(const char *table_name, LoDbFilter filter, void *context);
+
+private:
+    /**
+     * Table metadata
+     */
+    struct TableMetadata {
+        std::string table_name;
+        const pb_msgdesc_t *pb_descriptor;
+        size_t record_size;
+        char table_path[160];  // Full path: /lodb/{db_name}/{table_name}/
+    };
+    
+    std::string db_name;
+    char db_path[128];  // /lodb/{db_name}/
+    std::map<std::string, TableMetadata> tables;
+    
+    /**
+     * Get table metadata by name
+     * @param table_name Name of the table
+     * @return Pointer to table metadata, NULL if not found
+     */
+    TableMetadata *getTable(const char *table_name);
+};

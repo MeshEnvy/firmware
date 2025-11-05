@@ -17,9 +17,10 @@ LoBBSModule::LoBBSModule()
     // Get host node ID for use as salt in UUID generation
     hostNodeId = nodeDB->getNodeNum();
     
-    // Initialize LoDB tables
-    lodb_init_table(&usersTable, "lobbs_users", &meshtastic_LoBBSUser_msg, sizeof(meshtastic_LoBBSUser));
-    lodb_init_table(&sessionsTable, "lobbs_sessions", &meshtastic_LoBBSSession_msg, sizeof(meshtastic_LoBBSSession));
+    // Initialize LoDB database
+    db = new LoDb("lobbs");
+    db->registerTable("users", &meshtastic_LoBBSUser_msg, sizeof(meshtastic_LoBBSUser));
+    db->registerTable("sessions", &meshtastic_LoBBSSession_msg, sizeof(meshtastic_LoBBSSession));
     
     // Create message sender with callback to send replies
     messageSender = new TextMessageSender([this](uint32_t nodeId, const char *message) {
@@ -71,7 +72,7 @@ bool LoBBSModule::loadUserByUsername(const char *username, meshtastic_LoBBSUser 
 {
     // Convert username to UUID with host node ID as salt
     lodb_uuid_t userUuid = lodb_new_uuid(username, hostNodeId);
-    LoDbError err = lodb_get(&usersTable, userUuid, user);
+    LoDbError err = db->get("users", userUuid, user);
     if (err == LODB_OK) {
         LOG_DEBUG("Loaded user by username: %s", username);
         return true;
@@ -86,14 +87,14 @@ bool LoBBSModule::loadUserByNodeId(uint32_t nodeId, meshtastic_LoBBSUser *user)
     lodb_uuid_t sessionUuid = (lodb_uuid_t)nodeId;
     
     meshtastic_LoBBSSession session = meshtastic_LoBBSSession_init_zero;
-    LoDbError err = lodb_get(&sessionsTable, sessionUuid, &session);
+    LoDbError err = db->get("sessions", sessionUuid, &session);
     if (err != LODB_OK) {
         LOG_DEBUG("No session found for node 0x%08x", nodeId);
         return false;
     }
     
     // Now load the user by UUID from session
-    err = lodb_get(&usersTable, session.user_uuid, user);
+    err = db->get("users", session.user_uuid, user);
     if (err == LODB_OK) {
         LOG_DEBUG("Loaded user by node ID: 0x%08x -> UUID: " LODB_UUID_FMT, nodeId, LODB_UUID_ARGS(session.user_uuid));
         return true;
@@ -113,7 +114,7 @@ bool LoBBSModule::createUser(const char *username, const char *password, uint32_
     
     // Insert with username converted to UUID with host node ID as salt
     lodb_uuid_t userUuid = lodb_new_uuid(username, hostNodeId);
-    LoDbError err = lodb_insert(&usersTable, userUuid, &user);
+    LoDbError err = db->insert("users", userUuid, &user);
     if (err != LODB_OK) {
         LOG_ERROR("Failed to create user: %s", username);
         return false;
@@ -144,10 +145,10 @@ bool LoBBSModule::loginUser(const char *username, uint32_t nodeId)
     lodb_uuid_t sessionUuid = (lodb_uuid_t)nodeId;
     
     // Delete existing session if any (upsert pattern)
-    lodb_delete(&sessionsTable, sessionUuid);
+    db->deleteRecord("sessions", sessionUuid);
     
     // Insert new session
-    LoDbError err = lodb_insert(&sessionsTable, sessionUuid, &session);
+    LoDbError err = db->insert("sessions", sessionUuid, &session);
     if (err != LODB_OK) {
         LOG_ERROR("Failed to create session for node 0x%08x", nodeId);
         return false;
@@ -162,7 +163,7 @@ bool LoBBSModule::logoutUser(uint32_t nodeId)
     // Use node ID directly as UUID
     lodb_uuid_t sessionUuid = (lodb_uuid_t)nodeId;
     
-    LoDbError err = lodb_delete(&sessionsTable, sessionUuid);
+    LoDbError err = db->deleteRecord("sessions", sessionUuid);
     if (err == LODB_OK) {
         LOG_INFO("Logged out node 0x%08x", nodeId);
         return true;
@@ -185,16 +186,14 @@ void LoBBSModule::sendTextReply(uint32_t toNode, const char *message)
 
 void LoBBSModule::sendLargeMessage(uint32_t toNode, const std::string &message)
 {
-    messageSender->send(toNode, message); // TextMessageSender wakes its own thread
+    // messageSender->send(toNode, message); // TextMessageSender wakes its own thread
 }
 
 ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 {
     auto &p = mp.decoded;
     
-#if defined(DEBUG_PORT) && !defined(DEBUG_MUTE)
-    LOG_INFO("Received LoBBS message from=0x%0x, id=%d, msg=%.*s", mp.from, mp.id, p.payload.size, p.payload.bytes);
-#endif
+    LOG_INFO("LoBBS received DM from=0x%0x, id=%d, msg=%.*s", mp.from, mp.id, p.payload.size, p.payload.bytes);
 
     // Parse the command
     CommandParser parser(p.payload.bytes, p.payload.size);
@@ -321,7 +320,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
         };
         
         // Use cursor to iterate and build user list incrementally via worker pool
-        auto cursor = lodb_select_cursor(&usersTable, username_filter, filterStr);
+        auto cursor = db->selectCursor("users", username_filter, filterStr);
         auto results = std::make_shared<std::vector<std::string>>();
         uint32_t fromNode = mp.from;
         std::string filterString(filterStr);
@@ -467,9 +466,9 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
     }
     
     // Unknown command
-    char errorMsg[64];
-    snprintf(errorMsg, sizeof(errorMsg), "Unknown command: %s", cmdName);
-    sendTextReply(mp.from, errorMsg);
+    // char errorMsg[64];
+    // snprintf(errorMsg, sizeof(errorMsg), "Unknown command: %s", cmdName);
+    // sendTextReply(mp.from, errorMsg);
     
     return ProcessMessage::CONTINUE;
 }

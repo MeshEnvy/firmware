@@ -21,7 +21,12 @@
 
 // Cursor structure for cooperative iteration
 struct LoDbCursor {
-    LoDbTable *table;
+    LoDb *db;  // Parent database
+    std::string table_name;
+    const pb_msgdesc_t *pb_descriptor;
+    size_t record_size;
+    char table_path[160];
+    
     LoDbFilter filter;
     void *filter_context;
     
@@ -77,40 +82,81 @@ lodb_uuid_t lodb_new_uuid(const char *str, uint64_t salt)
     return uuid;
 }
 
-// Initialize a table and create necessary directories
-LoDbError lodb_init_table(LoDbTable *table, const char *table_name, const pb_msgdesc_t *pb_descriptor, size_t record_size)
+// LoDb Class Implementation
+
+LoDb::LoDb(const char *db_name) : db_name(db_name)
 {
-    if (!table || !table_name || !pb_descriptor || record_size == 0) {
-        return LODB_ERR_INVALID;
-    }
-
-    table->table_name = table_name;
-    table->pb_descriptor = pb_descriptor;
-    table->record_size = record_size;
-
-    // Build table path
-    snprintf(table->table_path, sizeof(table->table_path), "/lodb/%s", table_name);
+    // Build database path
+    snprintf(db_path, sizeof(db_path), "/lodb/%s", db_name);
 
 #ifdef FSCom
     // Create directories
     concurrency::LockGuard g(spiLock);
     FSCom.mkdir("/lodb");
-    if (!FSCom.mkdir(table->table_path)) {
-        LOG_DEBUG("Table directory may already exist or created: %s", table->table_path);
+    if (!FSCom.mkdir(db_path)) {
+        LOG_DEBUG("Database directory may already exist or created: %s", db_path);
+    }
+#else
+    LOG_ERROR("Filesystem not available");
+#endif
+
+    LOG_INFO("Initialized LoDB database: %s", db_path);
+}
+
+LoDb::~LoDb()
+{
+    // Nothing to clean up for now
+}
+
+LoDbError LoDb::registerTable(const char *table_name, const pb_msgdesc_t *pb_descriptor, size_t record_size)
+{
+    if (!table_name || !pb_descriptor || record_size == 0) {
+        return LODB_ERR_INVALID;
+    }
+
+    TableMetadata metadata;
+    metadata.table_name = table_name;
+    metadata.pb_descriptor = pb_descriptor;
+    metadata.record_size = record_size;
+    
+    // Build table path: /lodb/{db_name}/{table_name}/
+    snprintf(metadata.table_path, sizeof(metadata.table_path), "%s/%s", db_path, table_name);
+
+#ifdef FSCom
+    // Create table directory
+    concurrency::LockGuard g(spiLock);
+    if (!FSCom.mkdir(metadata.table_path)) {
+        LOG_DEBUG("Table directory may already exist or created: %s", metadata.table_path);
     }
 #else
     LOG_ERROR("Filesystem not available");
     return LODB_ERR_IO;
 #endif
 
-    LOG_INFO("Initialized LoDB table: %s", table->table_path);
+    tables[table_name] = metadata;
+    LOG_INFO("Registered table: %s at %s", table_name, metadata.table_path);
     return LODB_OK;
 }
 
-// Insert a record with a UUID
-LoDbError lodb_insert(LoDbTable *table, lodb_uuid_t uuid, const void *record)
+LoDb::TableMetadata *LoDb::getTable(const char *table_name)
 {
-    if (!table || !record) {
+    auto it = tables.find(table_name);
+    if (it == tables.end()) {
+        LOG_ERROR("Table not registered: %s", table_name);
+        return nullptr;
+    }
+    return &it->second;
+}
+
+// Insert a record with a UUID
+LoDbError LoDb::insert(const char *table_name, lodb_uuid_t uuid, const void *record)
+{
+    if (!table_name || !record) {
+        return LODB_ERR_INVALID;
+    }
+
+    TableMetadata *table = getTable(table_name);
+    if (!table) {
         return LODB_ERR_INVALID;
     }
 
@@ -120,7 +166,7 @@ LoDbError lodb_insert(LoDbTable *table, lodb_uuid_t uuid, const void *record)
     lodb_uuid_to_hex(uuid, uuid_hex);
 
     // Build file path
-    char file_path[160];
+    char file_path[192];
     snprintf(file_path, sizeof(file_path), "%s/%s.pr", table->table_path, uuid_hex);
 
     // Check if file already exists
@@ -176,9 +222,14 @@ LoDbError lodb_insert(LoDbTable *table, lodb_uuid_t uuid, const void *record)
 }
 
 // Get a record by UUID
-LoDbError lodb_get(LoDbTable *table, lodb_uuid_t uuid, void *record_out)
+LoDbError LoDb::get(const char *table_name, lodb_uuid_t uuid, void *record_out)
 {
-    if (!table || !record_out) {
+    if (!table_name || !record_out) {
+        return LODB_ERR_INVALID;
+    }
+
+    TableMetadata *table = getTable(table_name);
+    if (!table) {
         return LODB_ERR_INVALID;
     }
 
@@ -188,7 +239,7 @@ LoDbError lodb_get(LoDbTable *table, lodb_uuid_t uuid, void *record_out)
     lodb_uuid_to_hex(uuid, uuid_hex);
 
     // Build file path
-    char file_path[160];
+    char file_path[192];
     snprintf(file_path, sizeof(file_path), "%s/%s.pr", table->table_path, uuid_hex);
 
     // Read file into buffer
@@ -232,9 +283,14 @@ LoDbError lodb_get(LoDbTable *table, lodb_uuid_t uuid, void *record_out)
 }
 
 // Update a single record by UUID
-LoDbError lodb_update(LoDbTable *table, lodb_uuid_t uuid, const void *record)
+LoDbError LoDb::update(const char *table_name, lodb_uuid_t uuid, const void *record)
 {
-    if (!table || !record) {
+    if (!table_name || !record) {
+        return LODB_ERR_INVALID;
+    }
+
+    TableMetadata *table = getTable(table_name);
+    if (!table) {
         return LODB_ERR_INVALID;
     }
 
@@ -244,7 +300,7 @@ LoDbError lodb_update(LoDbTable *table, lodb_uuid_t uuid, const void *record)
     lodb_uuid_to_hex(uuid, uuid_hex);
 
     // Build file path
-    char file_path[160];
+    char file_path[192];
     snprintf(file_path, sizeof(file_path), "%s/%s.pr", table->table_path, uuid_hex);
 
     // Check if record exists first
@@ -299,8 +355,13 @@ LoDbError lodb_update(LoDbTable *table, lodb_uuid_t uuid, const void *record)
 }
 
 // Delete a single record by UUID
-LoDbError lodb_delete(LoDbTable *table, lodb_uuid_t uuid)
+LoDbError LoDb::deleteRecord(const char *table_name, lodb_uuid_t uuid)
 {
+    if (!table_name) {
+        return LODB_ERR_INVALID;
+    }
+
+    TableMetadata *table = getTable(table_name);
     if (!table) {
         return LODB_ERR_INVALID;
     }
@@ -310,7 +371,7 @@ LoDbError lodb_delete(LoDbTable *table, lodb_uuid_t uuid)
     char uuid_hex[17];
     lodb_uuid_to_hex(uuid, uuid_hex);
 
-    char file_path[160];
+    char file_path[192];
     snprintf(file_path, sizeof(file_path), "%s/%s.pr", table->table_path, uuid_hex);
 
     {
@@ -330,8 +391,13 @@ LoDbError lodb_delete(LoDbTable *table, lodb_uuid_t uuid)
 }
 
 // Create a cursor for iterating through records
-LoDbCursor *lodb_select_cursor(LoDbTable *table, LoDbFilter filter, void *context)
+LoDbCursor *LoDb::selectCursor(const char *table_name, LoDbFilter filter, void *context)
 {
+    if (!table_name) {
+        return nullptr;
+    }
+
+    TableMetadata *table = getTable(table_name);
     if (!table) {
         return nullptr;
     }
@@ -343,7 +409,11 @@ LoDbCursor *lodb_select_cursor(LoDbTable *table, LoDbFilter filter, void *contex
         return nullptr;
     }
 
-    cursor->table = table;
+    cursor->db = this;
+    cursor->table_name = table_name;
+    cursor->pb_descriptor = table->pb_descriptor;
+    cursor->record_size = table->record_size;
+    strncpy(cursor->table_path, table->table_path, sizeof(cursor->table_path) - 1);
     cursor->filter = filter;
     cursor->filter_context = context;
     cursor->dir_exhausted = false;
@@ -361,16 +431,16 @@ LoDbCursor *lodb_select_cursor(LoDbTable *table, LoDbFilter filter, void *contex
     {
         concurrency::LockGuard g(spiLock);
         
-        File dir = FSCom.open(table->table_path, FILE_O_READ);
+        File dir = FSCom.open(cursor->table_path, FILE_O_READ);
         if (!dir) {
-            LOG_DEBUG("Table directory not found: %s", table->table_path);
+            LOG_DEBUG("Table directory not found: %s", cursor->table_path);
             cursor->dir_handle = nullptr;
             cursor->dir_exhausted = true; // Empty table, mark as done
             return cursor;
         }
 
         if (!dir.isDirectory()) {
-            LOG_ERROR("Table path is not a directory: %s", table->table_path);
+            LOG_ERROR("Table path is not a directory: %s", cursor->table_path);
             dir.close();
             delete[] cursor->current_record;
             delete cursor;
@@ -381,7 +451,7 @@ LoDbCursor *lodb_select_cursor(LoDbTable *table, LoDbFilter filter, void *contex
         cursor->dir_handle = new File(dir);
     }
 
-    LOG_DEBUG("Cursor created for streaming directory: %s", table->table_path);
+    LOG_DEBUG("Cursor created for streaming directory: %s", cursor->table_path);
 #else
     cursor->dir_handle = nullptr;
     cursor->dir_exhausted = true; // No filesystem, mark as done
@@ -455,8 +525,8 @@ bool lodb_cursor_next(LoDbCursor *cursor)
     uuid = ((uint64_t)high << 32) | (uint64_t)low;
     
     // Read and decode the record
-    memset(cursor->current_record, 0, cursor->table->record_size);
-    LoDbError err = lodb_get(cursor->table, uuid, cursor->current_record);
+    memset(cursor->current_record, 0, cursor->record_size);
+    LoDbError err = cursor->db->get(cursor->table_name.c_str(), uuid, cursor->current_record);
     
     if (err != LODB_OK) {
         LOG_WARN("Failed to read record " LODB_UUID_FMT " during cursor iteration", LODB_UUID_ARGS(uuid));
