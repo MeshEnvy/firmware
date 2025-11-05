@@ -183,4 +183,4 @@ if ("HAS_TFT", 1) in env.get("CPPDEFINES", []):
     env.AddPreAction('$BUILD_DIR/littlefs.bin', load_boot_logo)
 
 # Load LoBBS protobuf generation script
-env.SConscript("../extra_scripts/gen_lobbs_proto.py", exports="env")
+env.SConscript("../src/modules/LoBBSModule/gen_lobbs_proto.py", exports="env")
