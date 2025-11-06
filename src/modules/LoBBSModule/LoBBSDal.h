@@ -3,6 +3,7 @@
 #include "lobbs.pb.h"
 #include "lodb/LoDB.h"
 #include <stdint.h>
+#include <vector>
 
 // Maximum username length (from lobbs.options: meshtastic.LoBBSUser.username max_size:32)
 #define LOBBS_MAX_USERNAME_LEN 32
@@ -73,6 +74,28 @@ class LoBBSDal
      * Log out a user (delete session)
      */
     bool logoutUser(uint32_t nodeId);
+
+    /**
+     * Get user UUID by username lookup
+     * @return User UUID, or 0 if user not found
+     */
+    uint64_t getUserUuidByUsername(const char *username);
+
+    /**
+     * Send a mail message from one user to another
+     */
+    bool sendMail(uint64_t fromUserUuid, uint64_t toUserUuid, const char *message);
+
+    /**
+     * Get mail for a user (sorted by timestamp descending)
+     * Returns vector of mail records - caller must free
+     */
+    std::vector<void *> getMailForUser(uint64_t userUuid, uint32_t offset, uint32_t limit);
+
+    /**
+     * Mark a mail message as read
+     */
+    bool markMailAsRead(uint64_t mailUuid);
 
     /**
      * Get the underlying database instance

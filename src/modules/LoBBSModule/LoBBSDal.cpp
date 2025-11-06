@@ -23,6 +23,7 @@ LoBBSDal::LoBBSDal(uint32_t hostNodeId) : hostNodeId(hostNodeId)
     db = new LoDb("lobbs");
     db->registerTable("users", &meshtastic_LoBBSUser_msg, sizeof(meshtastic_LoBBSUser));
     db->registerTable("sessions", &meshtastic_LoBBSSession_msg, sizeof(meshtastic_LoBBSSession));
+    db->registerTable("mail", &meshtastic_LoBBSMail_msg, sizeof(meshtastic_LoBBSMail));
 }
 
 LoBBSDal::~LoBBSDal()
@@ -193,4 +194,117 @@ bool LoBBSDal::logoutUser(uint32_t nodeId)
     }
     LOG_WARN("No session found to log out for node 0x%08x", nodeId);
     return false;
+}
+
+uint64_t LoBBSDal::getUserUuidByUsername(const char *username)
+{
+    // Normalize username to lowercase for case-insensitive lookup
+    char normalized[LOBBS_USERNAME_BUFFER_SIZE];
+    normalizeUsername(username, normalized);
+
+    // Convert username to UUID with host node ID as salt
+    uint64_t userUuid = lodb_new_uuid(normalized, hostNodeId);
+
+    // Verify user exists
+    meshtastic_LoBBSUser user = meshtastic_LoBBSUser_init_zero;
+    LoDbError err = db->get("users", userUuid, &user);
+    if (err == LODB_OK) {
+        LOG_DEBUG("Found user UUID for %s: " LODB_UUID_FMT, username, LODB_UUID_ARGS(userUuid));
+        return userUuid;
+    }
+    LOG_DEBUG("User not found: %s", username);
+    return 0;
+}
+
+bool LoBBSDal::sendMail(uint64_t fromUserUuid, uint64_t toUserUuid, const char *message)
+{
+    // Generate a unique UUID for the mail message (using timestamp and recipient UUID)
+    lodb_uuid_t mailUuid = lodb_new_uuid((const char *)&toUserUuid, getTime());
+
+    // Create mail record
+    meshtastic_LoBBSMail mail = meshtastic_LoBBSMail_init_zero;
+    mail.uuid = mailUuid;
+    mail.from_user_uuid = fromUserUuid;
+    mail.to_user_uuid = toUserUuid;
+    strncpy(mail.message, message, sizeof(mail.message) - 1);
+    mail.message[sizeof(mail.message) - 1] = '\0';
+    mail.timestamp = getTime();
+    mail.read = false;
+
+    LoDbError err = db->insert("mail", mailUuid, &mail);
+    if (err != LODB_OK) {
+        LOG_ERROR("Failed to send mail from " LODB_UUID_FMT " to " LODB_UUID_FMT, LODB_UUID_ARGS(fromUserUuid),
+                  LODB_UUID_ARGS(toUserUuid));
+        return false;
+    }
+
+    LOG_INFO("Sent mail from " LODB_UUID_FMT " to " LODB_UUID_FMT, LODB_UUID_ARGS(fromUserUuid), LODB_UUID_ARGS(toUserUuid));
+    return true;
+}
+
+// Comparator for sorting mail by timestamp descending (newest first)
+static int compareMailByTimestamp(const void *a, const void *b)
+{
+    const meshtastic_LoBBSMail *m1 = (const meshtastic_LoBBSMail *)a;
+    const meshtastic_LoBBSMail *m2 = (const meshtastic_LoBBSMail *)b;
+    // Reverse order: newer (larger timestamp) first
+    if (m2->timestamp > m1->timestamp)
+        return 1;
+    if (m2->timestamp < m1->timestamp)
+        return -1;
+    return 0;
+}
+
+std::vector<void *> LoBBSDal::getMailForUser(uint64_t userUuid, uint32_t offset, uint32_t limit)
+{
+    // Build filter lambda for mail matching recipient
+    auto mail_filter = [userUuid](const void *rec) -> bool {
+        const meshtastic_LoBBSMail *m = (const meshtastic_LoBBSMail *)rec;
+        return m->to_user_uuid == userUuid;
+    };
+
+    // Execute select with filter and sort
+    auto allMail = db->select("mail", mail_filter, compareMailByTimestamp);
+
+    // Apply offset and limit
+    std::vector<void *> result;
+    for (size_t i = offset; i < allMail.size() && i < offset + limit; i++) {
+        result.push_back(allMail[i]);
+    }
+
+    // Free records not included in result
+    for (size_t i = 0; i < allMail.size(); i++) {
+        if (i < offset || i >= offset + limit) {
+            delete[] (uint8_t *)allMail[i];
+        }
+    }
+
+    LOG_DEBUG("Retrieved %d mail messages for user " LODB_UUID_FMT " (offset=%d, limit=%d)", result.size(),
+              LODB_UUID_ARGS(userUuid), offset, limit);
+    return result;
+}
+
+bool LoBBSDal::markMailAsRead(uint64_t mailUuid)
+{
+    // Load the mail record
+    meshtastic_LoBBSMail mail = meshtastic_LoBBSMail_init_zero;
+    LoDbError err = db->get("mail", mailUuid, &mail);
+    if (err != LODB_OK) {
+        LOG_WARN("Mail not found: " LODB_UUID_FMT, LODB_UUID_ARGS(mailUuid));
+        return false;
+    }
+
+    // Update read flag
+    mail.read = true;
+
+    // Delete old record and insert updated one
+    db->deleteRecord("mail", mailUuid);
+    err = db->insert("mail", mailUuid, &mail);
+    if (err != LODB_OK) {
+        LOG_ERROR("Failed to mark mail as read: " LODB_UUID_FMT, LODB_UUID_ARGS(mailUuid));
+        return false;
+    }
+
+    LOG_DEBUG("Marked mail as read: " LODB_UUID_FMT, LODB_UUID_ARGS(mailUuid));
+    return true;
 }
