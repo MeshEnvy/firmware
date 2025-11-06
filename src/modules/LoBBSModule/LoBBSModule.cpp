@@ -236,8 +236,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
         return ProcessMessage::CONTINUE;
     }
 
-    const char *helpMsg = LOBBS_HEADER "/hi <user> <pass> - Login or create account\n"
-                                       "Create an account to get started!";
+    const char *helpMsg = LOBBS_HEADER "/hi <user> <pass> - Login or create account\n";
     LOG_DEBUG("Help message: %s", helpMsg);
     sendReply(mp.from, helpMsg);
     return ProcessMessage::CONTINUE;
