@@ -241,6 +241,7 @@ LoDbError LoDb::get(const char *table_name, lodb_uuid_t uuid, void *record_out)
     // Build file path
     char file_path[192];
     snprintf(file_path, sizeof(file_path), "%s/%s.pr", table->table_path, uuid_hex);
+    LOG_DEBUG("file_path: %s", file_path);
 
     // Read file into buffer
     uint8_t buffer[2048];
@@ -248,6 +249,7 @@ LoDbError LoDb::get(const char *table_name, lodb_uuid_t uuid, void *record_out)
 
     {
         concurrency::LockGuard g(spiLock);
+
         auto file = FSCom.open(file_path, FILE_O_READ);
         if (!file) {
             LOG_DEBUG("Record not found: " LODB_UUID_FMT, LODB_UUID_ARGS(uuid));
