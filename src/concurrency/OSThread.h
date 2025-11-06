@@ -53,6 +53,7 @@ class OSThread : public Thread
 
     static void setup();
 
+    void enable(uint32_t _interval);
     virtual int32_t disable();
 
     /**

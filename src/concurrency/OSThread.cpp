@@ -101,6 +101,12 @@ void OSThread::run()
     currentThread = NULL;
 }
 
+void OSThread::enable(uint32_t _interval)
+{
+    enabled = true;
+    setInterval(_interval);
+}
+
 int32_t OSThread::disable()
 {
     enabled = false;
