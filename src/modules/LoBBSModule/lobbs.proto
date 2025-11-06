@@ -25,9 +25,9 @@ message LoBBSUser {
   bytes password_hash = 2;
 
   /*
-   * User ID - deterministic hash derived from username
+   * User UUID - deterministic hash derived from username
    */
-  uint32 uid = 3;
+  uint64 uuid = 3;
 }
 
 /*
