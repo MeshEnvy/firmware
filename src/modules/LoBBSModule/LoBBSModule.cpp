@@ -95,9 +95,103 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
         LOG_DEBUG("User is not authenticated");
     }
 
-    // Copy payload to mutable buffer for strtok and null terminate (there is no null terminator in the payload)
+    // Copy payload to mutable buffer and null terminate (there is no null terminator in the payload)
     memcpy(msgBuffer, mp.decoded.payload.bytes, mp.decoded.payload.size);
     msgBuffer[mp.decoded.payload.size] = '\0';
+
+    // Check for @mention mail sending BEFORE tokenizing (authenticated users only)
+    // This must happen before strtok destroys the buffer
+    if (isAuthenticated && strchr(msgBuffer, '@')) {
+        LOG_DEBUG("Processing @mention mail from node=0x%0x", mp.from);
+
+        // Extract message content and find all @mentions
+        std::vector<std::string> recipients;
+        std::string messageContent = std::string(msgBuffer);
+
+        // Parse the message for @mentions
+        char *token = msgBuffer;
+        bool foundAny = false;
+
+        while (*token) {
+            if (*token == '@') {
+                foundAny = true;
+                // Found a mention, extract username
+                token++; // Skip @
+                char *usernameStart = token;
+                while (*token && (isalnum(*token) || *token == '_')) {
+                    token++;
+                }
+
+                // Save username (only if not already in list)
+                char username[LOBBS_USERNAME_BUFFER_SIZE];
+                size_t usernameLen = token - usernameStart;
+                if (usernameLen > 0 && usernameLen < LOBBS_USERNAME_BUFFER_SIZE) {
+                    strncpy(username, usernameStart, usernameLen);
+                    username[usernameLen] = '\0';
+                    std::string usernameStr(username);
+                    // Only add if not already in recipients list
+                    if (std::find(recipients.begin(), recipients.end(), usernameStr) == recipients.end()) {
+                        recipients.push_back(usernameStr);
+                    }
+                }
+            } else {
+                token++;
+            }
+        }
+
+        if (foundAny && !recipients.empty()) {
+            // Validate and send to each recipient
+            int successCount = 0;
+            int failCount = 0;
+            std::string failedUsers;
+
+            for (const auto &recipient : recipients) {
+                // Get recipient UUID
+                uint64_t recipientUuid = dal->getUserUuidByUsername(recipient.c_str());
+                if (recipientUuid == 0) {
+                    LOG_WARN("User not found: %s", recipient.c_str());
+                    if (failCount > 0)
+                        failedUsers += ", ";
+                    failedUsers += "@" + recipient;
+                    failCount++;
+                    continue;
+                }
+
+                // Send mail
+                if (dal->sendMail(existingUser.uuid, recipientUuid, messageContent.c_str())) {
+                    LOG_INFO("Sent mail from %s to %s", existingUser.username, recipient.c_str());
+                    successCount++;
+                } else {
+                    LOG_ERROR("Failed to send mail to %s", recipient.c_str());
+                    if (failCount > 0)
+                        failedUsers += ", ";
+                    failedUsers += "@" + recipient;
+                    failCount++;
+                }
+            }
+
+            // Send confirmation
+            if (successCount > 0 && failCount == 0) {
+                if (successCount == 1) {
+                    snprintf(replyBuffer, sizeof(replyBuffer), "Mail sent to @%s", recipients[0].c_str());
+                } else {
+                    snprintf(replyBuffer, sizeof(replyBuffer), "Mail sent to %d users", successCount);
+                }
+                sendReply(mp.from, replyBuffer);
+            } else if (successCount > 0 && failCount > 0) {
+                snprintf(replyBuffer, sizeof(replyBuffer), "Mail sent to %d users. Failed: %s", successCount,
+                         failedUsers.c_str());
+                sendReply(mp.from, replyBuffer);
+            } else {
+                snprintf(replyBuffer, sizeof(replyBuffer), "Failed to send mail. Users not found: %s", failedUsers.c_str());
+                sendReply(mp.from, replyBuffer);
+            }
+
+            return ProcessMessage::CONTINUE;
+        }
+    }
+
+    // Tokenize for command processing (this modifies msgBuffer)
     char *cmdName = strtok(msgBuffer, " ");
     LOG_DEBUG("Token: %s", cmdName);
 
@@ -186,106 +280,9 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
      * ================================
      */
 
-    // Check for @mention mail sending (before command processing)
-    // This allows both "@user message" and "message with @user1 and @user2"
-    if (strchr(msgBuffer, '@')) {
-        LOG_DEBUG("Processing @mention mail from node=0x%0x", mp.from);
-
-        // Extract message content and find all @mentions
-        std::vector<std::string> recipients;
-        std::string messageContent;
-
-        // Parse the message for @mentions
-        char *token = msgBuffer;
-        char *start = msgBuffer;
-        bool foundAny = false;
-
-        while (*token) {
-            if (*token == '@') {
-                foundAny = true;
-                // Found a mention, extract username
-                token++; // Skip @
-                char *usernameStart = token;
-                while (*token && (isalnum(*token) || *token == '_')) {
-                    token++;
-                }
-
-                // Save username (only if not already in list)
-                char username[LOBBS_USERNAME_BUFFER_SIZE];
-                size_t usernameLen = token - usernameStart;
-                if (usernameLen > 0 && usernameLen < LOBBS_USERNAME_BUFFER_SIZE) {
-                    strncpy(username, usernameStart, usernameLen);
-                    username[usernameLen] = '\0';
-                    std::string usernameStr(username);
-                    // Only add if not already in recipients list
-                    if (std::find(recipients.begin(), recipients.end(), usernameStr) == recipients.end()) {
-                        recipients.push_back(usernameStr);
-                    }
-                }
-            } else {
-                token++;
-            }
-        }
-
-        if (foundAny && !recipients.empty()) {
-            // Build the actual message content (original message)
-            messageContent = std::string((const char *)mp.decoded.payload.bytes, mp.decoded.payload.size);
-
-            // Validate and send to each recipient
-            int successCount = 0;
-            int failCount = 0;
-            std::string failedUsers;
-
-            for (const auto &recipient : recipients) {
-                // Get recipient UUID
-                uint64_t recipientUuid = dal->getUserUuidByUsername(recipient.c_str());
-                if (recipientUuid == 0) {
-                    LOG_WARN("User not found: %s", recipient.c_str());
-                    if (failCount > 0)
-                        failedUsers += ", ";
-                    failedUsers += "@" + recipient;
-                    failCount++;
-                    continue;
-                }
-
-                // Send mail
-                if (dal->sendMail(existingUser.uuid, recipientUuid, messageContent.c_str())) {
-                    LOG_INFO("Sent mail from %s to %s", existingUser.username, recipient.c_str());
-                    successCount++;
-                } else {
-                    LOG_ERROR("Failed to send mail to %s", recipient.c_str());
-                    if (failCount > 0)
-                        failedUsers += ", ";
-                    failedUsers += "@" + recipient;
-                    failCount++;
-                }
-            }
-
-            // Send confirmation
-            if (successCount > 0 && failCount == 0) {
-                if (successCount == 1) {
-                    snprintf(replyBuffer, sizeof(replyBuffer), "Mail sent to @%s", recipients[0].c_str());
-                } else {
-                    snprintf(replyBuffer, sizeof(replyBuffer), "Mail sent to %d users", successCount);
-                }
-                sendReply(mp.from, replyBuffer);
-            } else if (successCount > 0 && failCount > 0) {
-                snprintf(replyBuffer, sizeof(replyBuffer), "Mail sent to %d users. Failed: %s", successCount,
-                         failedUsers.c_str());
-                sendReply(mp.from, replyBuffer);
-            } else {
-                snprintf(replyBuffer, sizeof(replyBuffer), "Failed to send mail. Users not found: %s", failedUsers.c_str());
-                sendReply(mp.from, replyBuffer);
-            }
-
-            return ProcessMessage::CONTINUE;
-        }
-    }
-
     if (strcasecmp(cmdName, "/bye") == 0) {
         LOG_INFO("Processing /bye command from node=0x%0x", mp.from);
 
-        meshtastic_LoBBSUser user = meshtastic_LoBBSUser_init_zero;
         dal->logoutUser(mp.from);
         sendReply(mp.from, "Goodbye!");
 
