@@ -127,4 +127,3 @@ bool CommandParser::hasMore() const
     }
     return pos < payloadSize && payload[pos] != '\0';
 }
-

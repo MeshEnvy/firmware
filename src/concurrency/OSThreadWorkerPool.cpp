@@ -4,8 +4,7 @@
 namespace concurrency
 {
 
-OSThreadWorkerPool::OSThreadWorkerPool(const char *name, uint32_t period)
-    : OSThread(name, period)
+OSThreadWorkerPool::OSThreadWorkerPool(const char *name, uint32_t period) : OSThread(name, period)
 {
     LOG_DEBUG("OSThreadWorkerPool %s created", name);
 }
@@ -21,13 +20,13 @@ void OSThreadWorkerPool::addWorker(std::function<bool()> worker)
         LOG_WARN("Attempted to add null worker to pool");
         return;
     }
-    
+
     workers.push_back(worker);
-    
+
     // Wake up the thread to process the new worker
     enabled = true;
     setInterval(0);
-    
+
     LOG_DEBUG("Worker added to pool, total workers: %d", workers.size());
 }
 
@@ -41,28 +40,28 @@ int32_t OSThreadWorkerPool::runOnce()
             return disable();
         }
     }
-    
+
     // If no workers, disable until one is added
     if (workers.empty()) {
         LOG_DEBUG("No workers in pool, disabling");
         return disable();
     }
-    
+
     // Execute one worker in round-robin fashion
     // Get the front worker
     auto worker = workers.front();
     workers.pop_front();
-    
+
     // Execute it
     bool isComplete = worker();
-    
+
     // If not complete, add it back to the end of the queue
     if (!isComplete) {
         workers.push_back(worker);
     } else {
         LOG_DEBUG("Worker completed, remaining workers: %d", workers.size());
     }
-    
+
     // If we still have workers, run again soon
     // Otherwise disable until a new worker is added
     if (workers.empty()) {
@@ -74,4 +73,3 @@ int32_t OSThreadWorkerPool::runOnce()
 }
 
 } // namespace concurrency
-

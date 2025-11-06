@@ -4,14 +4,14 @@
 #include "configuration.h"
 #include "gps/RTC.h"
 #include <Arduino.h>
-#include <pb_decode.h>
-#include <pb_encode.h>
 #include <SHA256.h>
 #include <cstring>
+#include <pb_decode.h>
+#include <pb_encode.h>
 
 /**
  * LoDB Implementation - Cursor-based Cooperative Design
- * 
+ *
  * Threading Model:
  * - All filesystem operations use LockGuard(spiLock) for thread safety
  * - Single-record operations (insert, get, update, delete) complete immediately
@@ -21,23 +21,23 @@
 
 // Cursor structure for cooperative iteration
 struct LoDbCursor {
-    LoDb *db;  // Parent database
+    LoDb *db; // Parent database
     std::string table_name;
     const pb_msgdesc_t *pb_descriptor;
     size_t record_size;
     char table_path[160];
-    
+
     LoDbFilter filter;
     void *filter_context;
-    
+
     // Streaming directory iteration (one file at a time!)
 #ifdef FSCom
-    File *dir_handle;                // Pointer to open directory handle for streaming
+    File *dir_handle; // Pointer to open directory handle for streaming
 #endif
-    bool dir_exhausted;              // True when we've read all files
-    
+    bool dir_exhausted; // True when we've read all files
+
     // Current record state
-    uint8_t *current_record;         // Buffer for decoded record
+    uint8_t *current_record; // Buffer for decoded record
     lodb_uuid_t current_uuid;
     bool has_current;
 };
@@ -53,7 +53,7 @@ lodb_uuid_t lodb_new_uuid(const char *str, uint64_t salt)
 {
     char generated_str[32];
     const char *input_str = str;
-    
+
     // If no string provided, generate one from timestamp and random
     if (str == nullptr) {
         uint32_t timestamp = getTime();
@@ -61,21 +61,21 @@ lodb_uuid_t lodb_new_uuid(const char *str, uint64_t salt)
         snprintf(generated_str, sizeof(generated_str), "%u:%u", timestamp, random_val);
         input_str = generated_str;
     }
-    
+
     // Always hash string with salt
     SHA256 sha256;
     uint8_t hash[32];
-    
+
     sha256.reset();
     sha256.update(input_str, strlen(input_str));
-    
+
     // Add salt (always included now)
     uint8_t salt_bytes[8];
     memcpy(salt_bytes, &salt, 8);
     sha256.update(salt_bytes, 8);
-    
+
     sha256.finalize(hash, 32);
-    
+
     // Use first 8 bytes as uint64_t
     lodb_uuid_t uuid;
     memcpy(&uuid, hash, sizeof(lodb_uuid_t));
@@ -118,7 +118,7 @@ LoDbError LoDb::registerTable(const char *table_name, const pb_msgdesc_t *pb_des
     metadata.table_name = table_name;
     metadata.pb_descriptor = pb_descriptor;
     metadata.record_size = record_size;
-    
+
     // Build table path: /lodb/{db_name}/{table_name}/
     snprintf(metadata.table_path, sizeof(metadata.table_path), "%s/%s", db_path, table_name);
 
@@ -421,7 +421,7 @@ LoDbCursor *LoDb::selectCursor(const char *table_name, LoDbFilter filter, void *
     cursor->dir_exhausted = false;
     cursor->has_current = false;
     cursor->current_record = new uint8_t[table->record_size];
-    
+
     if (!cursor->current_record) {
         LOG_ERROR("Failed to allocate cursor record buffer");
         delete cursor;
@@ -432,7 +432,7 @@ LoDbCursor *LoDb::selectCursor(const char *table_name, LoDbFilter filter, void *
     // Open directory for streaming (one file at a time!)
     {
         concurrency::LockGuard g(spiLock);
-        
+
         File dir = FSCom.open(cursor->table_path, FILE_O_READ);
         if (!dir) {
             LOG_DEBUG("Table directory not found: %s", cursor->table_path);
@@ -448,7 +448,7 @@ LoDbCursor *LoDb::selectCursor(const char *table_name, LoDbFilter filter, void *
             delete cursor;
             return nullptr;
         }
-        
+
         // Allocate File on heap and move/copy into it
         cursor->dir_handle = new File(dir);
     }
@@ -481,9 +481,9 @@ bool lodb_cursor_next(LoDbCursor *cursor)
             cursor->dir_exhausted = true;
             return false;
         }
-        
+
         File file = cursor->dir_handle->openNextFile();
-        
+
         if (!file) {
             // No more files in directory
             cursor->dir_exhausted = true;
@@ -516,7 +516,7 @@ bool lodb_cursor_next(LoDbCursor *cursor)
     }
 
     std::string uuid_hex_str = filename.substr(0, prPos);
-    
+
     // Parse hex string to uint64_t UUID
     lodb_uuid_t uuid;
     uint32_t high, low;
@@ -525,11 +525,11 @@ bool lodb_cursor_next(LoDbCursor *cursor)
         return false; // Caller will call again for next file
     }
     uuid = ((uint64_t)high << 32) | (uint64_t)low;
-    
+
     // Read and decode the record
     memset(cursor->current_record, 0, cursor->record_size);
     LoDbError err = cursor->db->get(cursor->table_name.c_str(), uuid, cursor->current_record);
-    
+
     if (err != LODB_OK) {
         LOG_WARN("Failed to read record " LODB_UUID_FMT " during cursor iteration", LODB_UUID_ARGS(uuid));
         return false; // Caller will call again for next file
@@ -544,7 +544,7 @@ bool lodb_cursor_next(LoDbCursor *cursor)
     // Found a matching record!
     cursor->current_uuid = uuid;
     cursor->has_current = true;
-    
+
     LOG_DEBUG("Cursor found matching record: " LODB_UUID_FMT, LODB_UUID_ARGS(cursor->current_uuid));
     return true; // Match found!
 #else

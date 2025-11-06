@@ -6,7 +6,7 @@
 
 /**
  * CommandParser - Parse text commands from mesh packets
- * 
+ *
  * Commands start with '/' followed by command name, then optional arguments.
  * Example: "/hi alice mypassword"
  */
@@ -65,7 +65,6 @@ class CommandParser
   private:
     const uint8_t *payload;
     size_t payloadSize;
-    size_t position;        // Current parsing position
-    size_t argsStartPos;    // Position where arguments start (after command name)
+    size_t position;     // Current parsing position
+    size_t argsStartPos; // Position where arguments start (after command name)
 };
-
