@@ -2,20 +2,20 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <pb.h>
 #include <string>
 #include <vector>
 
 /**
- * LoDB - Cooperative Protobuf Database
+ * LoDB - Synchronous Protobuf Database
  *
  * A filesystem-based database for protobuf records stored in /lodb/<db_name>/<table_name>/<uuid>.pr files.
  *
- * COOPERATIVE DESIGN:
- * - All operations work on single records at a time
- * - SELECT uses cursors that advance one record per call (perfect for OSThread runOnce())
- * - Operations yield control between records for true cooperative multitasking
+ * SYNCHRONOUS DESIGN:
+ * - Single-record operations (get, insert, update, delete) complete immediately
+ * - SELECT returns complete result sets as vectors with optional filtering, sorting, and limiting
  */
 
 // UUID type - 64-bit unsigned integer
@@ -38,18 +38,21 @@ typedef enum {
 } LoDbError;
 
 /**
- * Filter function: returns true to select/include record
+ * Filter function: returns true to include record in results
+ * Supports lambdas with captures via std::function
  * @param record Pointer to the decoded protobuf record
- * @param context User-provided context data
- * @return true to include record in results, false to skip
+ * @return true to include record, false to skip
  */
-typedef bool (*LoDbFilter)(const void *record, void *context);
+typedef std::function<bool(const void *)> LoDbFilter;
 
 /**
- * Cursor for iterating through selected records
- * Opaque structure - use cursor functions to interact
+ * Comparator function: returns -1/0/1 for sorting
+ * Supports lambdas with captures via std::function
+ * @param a Pointer to first record
+ * @param b Pointer to second record
+ * @return -1 if a < b, 0 if a == b, 1 if a > b
  */
-typedef struct LoDbCursor LoDbCursor;
+typedef std::function<int(const void *, const void *)> LoDbComparator;
 
 /**
  * Convert UUID to 16-character hex string for filenames
@@ -65,63 +68,6 @@ void lodb_uuid_to_hex(lodb_uuid_t uuid, char hex_out[17]);
  * @return 64-bit UUID - auto-generated if str is NULL, otherwise SHA256(str + salt)
  */
 lodb_uuid_t lodb_new_uuid(const char *str, uint64_t salt);
-
-/**
- * Advance cursor to next file and check if it matches filter
- * COOPERATIVE: Processes exactly ONE file from directory, then returns immediately
- *
- * Call this from OSThread::runOnce() for true cooperation. If the current file doesn't
- * match the filter, this returns false (not true with next match). Caller should call
- * again until either a match is found or lodb_cursor_is_exhausted() returns true.
- *
- * @param cursor Cursor to advance
- * @return true if current file matches filter, false if no match OR iteration complete
- *
- * USAGE:
- *   while (!lodb_cursor_is_exhausted(cursor)) {
- *       if (lodb_cursor_next(cursor)) {
- *           // Process matching record
- *           const void *record = lodb_cursor_get(cursor);
- *           // ... do work, then return from runOnce() for cooperation
- *       }
- *       // No match, but more files remain - return from runOnce() anyway
- *       return 0;
- *   }
- */
-bool lodb_cursor_next(LoDbCursor *cursor);
-
-/**
- * Check if cursor has exhausted all files in the directory
- * Use this to distinguish "no match" from "no more files"
- *
- * @param cursor Cursor to check
- * @return true if no more files to process, false if more files remain
- */
-bool lodb_cursor_is_exhausted(LoDbCursor *cursor);
-
-/**
- * Get the current record from the cursor
- * Valid only after lodb_cursor_next() returns true
- *
- * @param cursor Cursor to query
- * @return Pointer to decoded record (owned by cursor, valid until next call or close)
- */
-const void *lodb_cursor_get(LoDbCursor *cursor);
-
-/**
- * Get the UUID of the current record from the cursor
- * Valid only after lodb_cursor_next() returns true
- *
- * @param cursor Cursor to query
- * @return UUID (owned by cursor, valid until next call or close)
- */
-lodb_uuid_t lodb_cursor_get_uuid(LoDbCursor *cursor);
-
-/**
- * Close cursor and free all resources
- * @param cursor Cursor to close (can be NULL)
- */
-void lodb_cursor_close(LoDbCursor *cursor);
 
 /**
  * LoDB Database Class
@@ -188,24 +134,37 @@ class LoDb
     LoDbError deleteRecord(const char *table_name, lodb_uuid_t uuid);
 
     /**
-     * Create a cursor for iterating through records matching a filter
-     * This is the cooperative way to scan a table - call lodb_cursor_next() from OSThread::runOnce()
+     * Select records from a table with optional filtering, sorting, and limiting
      *
-     * @param table_name Name of the table to scan
-     * @param filter Filter function (returns true to include record), NULL to select all
-     * @param context User context passed to filter function
-     * @return Cursor pointer on success, NULL on error
+     * Operation order: FILTER → SORT → LIMIT
+     *
+     * @param table_name Name of the table to query
+     * @param filter Optional filter function (NULL to select all records)
+     * @param comparator Optional comparator for sorting (NULL for no sorting)
+     * @param limit Optional result limit (0 for no limit)
+     * @return Vector of heap-allocated record pointers (caller must free each with delete[])
      *
      * USAGE:
-     *   cursor = db->selectCursor("users", filter, &ctx);
-     *   while (lodb_cursor_next(cursor)) {
-     *       const void *record = lodb_cursor_get(cursor);
-     *       const char *uuid = lodb_cursor_get_uuid(cursor);
-     *       // Process one record, then return from runOnce() for cooperation
+     *   auto filter = [](const void* rec) -> bool {
+     *       auto* user = (const User*)rec;
+     *       return user->active;
+     *   };
+     *
+     *   auto comparator = [](const void* a, const void* b) -> int {
+     *       auto* u1 = (const User*)a;
+     *       auto* u2 = (const User*)b;
+     *       return strcmp(u1->name, u2->name);
+     *   };
+     *
+     *   auto results = db->select("users", filter, comparator, 10);
+     *   for (auto* rec : results) {
+     *       auto* user = (User*)rec;
+     *       // ... use user
+     *       delete[] (uint8_t*)rec;  // Free the record
      *   }
-     *   lodb_cursor_close(cursor);
      */
-    LoDbCursor *selectCursor(const char *table_name, LoDbFilter filter, void *context);
+    std::vector<void *> select(const char *table_name, LoDbFilter filter = LoDbFilter(),
+                               LoDbComparator comparator = LoDbComparator(), size_t limit = 0);
 
   private:
     /**

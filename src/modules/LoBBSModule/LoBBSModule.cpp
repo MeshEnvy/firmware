@@ -1,4 +1,5 @@
 #include "LoBBSModule.h"
+#include "LoBBSDal.h"
 #include "MeshService.h"
 #include "airtime.h"
 #include "configuration.h"
@@ -6,6 +7,33 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+
+// Static helper: case-insensitive substring search
+static const char *stristr(const char *haystack, const char *needle)
+{
+    if (!*needle)
+        return haystack;
+
+    for (; *haystack; haystack++) {
+        const char *h = haystack;
+        const char *n = needle;
+        while (*h && *n && tolower(*h) == tolower(*n)) {
+            h++;
+            n++;
+        }
+        if (!*n)
+            return haystack;
+    }
+    return nullptr;
+}
+
+// Static helper: comparator for case-insensitive alphabetical username sorting
+static int compareUsernames(const void *a, const void *b)
+{
+    const meshtastic_LoBBSUser *u1 = (const meshtastic_LoBBSUser *)a;
+    const meshtastic_LoBBSUser *u2 = (const meshtastic_LoBBSUser *)b;
+    return strcasecmp(u1->username, u2->username);
+}
 
 LoBBSModule::LoBBSModule() : SinglePortModule("LoBBS", meshtastic_PortNum_TEXT_MESSAGE_APP)
 {
@@ -35,7 +63,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
     char *cmdName = strtok(msgBuffer, " ");
     LOG_DEBUG("Token: %s", cmdName);
 
-    if (strcmp(cmdName, "/hi") == 0) {
+    if (strcasecmp(cmdName, "/hi") == 0) {
         LOG_DEBUG("Processing /hi command from node=0x%0x", mp.from);
 
         // Get username
@@ -47,14 +75,11 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 
         // Validate username length
         size_t usernameLen = strlen(username);
-        if (usernameLen == 0 || usernameLen > 32) {
-            sendReply(mp.from, "Username must be 1-32 characters");
-            return ProcessMessage::CONTINUE;
-        }
-
-        // Validate username format
-        if (!dal->isValidUsername(username)) {
-            sendReply(mp.from, "Username must start with a letter and contain only letters, numbers, or underscores");
+        if (usernameLen == 0 || usernameLen > LOBBS_MAX_USERNAME_LEN || !dal->isValidUsername(username)) {
+            sendReply(
+                mp.from,
+                "Username not found or is invalid. Username must be 1-" LOBBS_XSTR(
+                    LOBBS_MAX_USERNAME_LEN) " characters and contain only letters, numbers, and common special characters.");
             return ProcessMessage::CONTINUE;
         }
 
@@ -67,7 +92,8 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 
         // Validate password is at least 5 characters long
         if (strlen(password) < 5 || strlen(password) > 50 || !dal->isValidPassword(password)) {
-            sendReply(mp.from, "Password must be between 5 and 50 characters long and contain only letters, numbers, and common "
+            sendReply(mp.from, "Password incorrect or invalid. Password must be between 5 and 50 characters long and contain "
+                               "only letters, numbers, and common "
                                "special characters.");
             return ProcessMessage::CONTINUE;
         }
@@ -122,7 +148,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
      * ================================
      */
 
-    if (strcmp(cmdName, "/bye") == 0) {
+    if (strcasecmp(cmdName, "/bye") == 0) {
         LOG_INFO("Processing /bye command from node=0x%0x", mp.from);
 
         meshtastic_LoBBSUser user = meshtastic_LoBBSUser_init_zero;
@@ -132,7 +158,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
         return ProcessMessage::CONTINUE;
     }
 
-    if (strcmp(cmdName, "/users") == 0) {
+    if (strcasecmp(cmdName, "/users") == 0) {
         LOG_INFO("Processing /users command from node=0x%0x", mp.from);
 
         char *filterStr = strtok(NULL, " ");
@@ -143,108 +169,64 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
             return ProcessMessage::CONTINUE;
         }
 
-        // Build filter function for username matching
-        auto username_filter = [](const void *rec, void *ctx) -> bool {
+        // Build filter lambda for username matching (captures filterStr)
+        auto username_filter = [filterStr](const void *rec) -> bool {
             const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)rec;
-            const char *filter = (const char *)ctx;
-
-            // If no filter, include all
-            if (filter[0] == '\0') {
-                return true;
-            }
-
-            // Case-insensitive substring match
-            char username_lower[33];
-            strncpy(username_lower, u->username, sizeof(username_lower) - 1);
-            for (size_t i = 0; username_lower[i]; i++) {
-                username_lower[i] = tolower(username_lower[i]);
-            }
-
-            char filter_lower[33];
-            strncpy(filter_lower, filter, sizeof(filter_lower) - 1);
-            for (size_t i = 0; filter_lower[i]; i++) {
-                filter_lower[i] = tolower(filter_lower[i]);
-            }
-
-            return strstr(username_lower, filter_lower) != nullptr;
+            return !filterStr || !filterStr[0] || stristr(u->username, filterStr) != nullptr;
         };
 
-        // Use cursor to iterate and build user list incrementally via worker pool
-        auto cursor = dal->getDb()->selectCursor("users", username_filter, filterStr);
-        auto results = std::make_shared<std::vector<std::string>>();
-        uint32_t fromNode = mp.from;
-        std::string filterString(filterStr);
+        // Execute synchronous select with filter and sort
+        auto users = dal->getDb()->select("users", username_filter, compareUsernames);
 
-        // Add worker to process cursor incrementally
-        workerPool->addWorker([cursor, results, fromNode, filterString, this]() mutable -> bool {
-            // Process one cursor entry per worker invocation
-            if (!lodb_cursor_is_exhausted(cursor)) {
-                if (lodb_cursor_next(cursor)) {
-                    const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)lodb_cursor_get(cursor);
-                    results->push_back(std::string(u->username));
-                }
-                return false; // Not done yet, continue on next cycle
+        // Build and send response
+        if (users.empty()) {
+            std::string reply;
+            LOG_DEBUG("No users match '%s'", filterStr);
+            if (filterStr && filterStr[0]) {
+                reply += "No users match '";
+                reply += filterStr;
+                reply += "'";
             } else {
-                // Cursor exhausted, close it and send results
-                lodb_cursor_close(cursor);
-
-                if (results->empty()) {
-                    char noMatchMsg[64];
-                    if (!filterString.empty()) {
-                        snprintf(noMatchMsg, sizeof(noMatchMsg), "No users match '%s", filterString.c_str());
-                    } else {
-                        snprintf(noMatchMsg, sizeof(noMatchMsg), "No users found");
-                    }
-                    messageSender->send(fromNode, noMatchMsg);
-                } else {
-                    // Sort alphabetically
-                    std::sort(results->begin(), results->end());
-
-                    // Build user directory message
-                    std::string userListMsg = "User directory: ";
-                    for (size_t i = 0; i < results->size(); i++) {
-                        if (i > 0) {
-                            userListMsg += ", ";
-                        }
-                        userListMsg += (*results)[i];
-                    }
-
-                    // Send using message sender (will auto-fragment cooperatively)
-                    messageSender->send(fromNode, userListMsg);
-                }
-
-                return true; // Done
+                reply += "No users found";
             }
-        });
+        } else {
+            LOG_DEBUG("# users: %d", users.size());
+            // Build user directory message
+            std::string userListMsg = "User directory:\n";
+            for (size_t i = 0; i < users.size(); i++) {
+                const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)users[i];
+                if (i > 0) {
+                    userListMsg += ", ";
+                }
+                userListMsg += u->username;
+            }
+            LOG_DEBUG("User list message: %s", userListMsg.c_str());
 
-        // Acknowledge that the request is being processed
-        messageSender->send(mp.from, "Fetching user directory...");
+            sendReply(mp.from, userListMsg.c_str());
+
+            // Free allocated records
+            for (auto *userPtr : users) {
+                delete[] (uint8_t *)userPtr;
+            }
+        }
 
         return ProcessMessage::CONTINUE;
     }
 
-    if (isAuthenticated) {
-        const char *helpMsg = LOBBS_HEADER "/bye - Logout\n"
-                                           "/users [filter] - List users (optional filter)\n"
-                                           "/mail - Mail (soon)\n"
-                                           "/news - News (soon)\n"
-                                           "/help - Show help";
-        LOG_DEBUG("Help message: %s", helpMsg);
-        sendReply(mp.from, helpMsg);
-        return ProcessMessage::CONTINUE;
-    }
-
-    const char *helpMsg = LOBBS_HEADER "/hi <user> <pass> - Login or create account\n";
+    std::string helpMsg = LOBBS_HEADER "/bye - Logout\n"
+                                       "/users [filter] - List users (optional filter)\n"
+                                       "/mail - Mail (soon)\n"
+                                       "/news - News (soon)";
     LOG_DEBUG("Help message: %s", helpMsg);
     sendReply(mp.from, helpMsg);
     return ProcessMessage::CONTINUE;
 }
 
-void LoBBSModule::sendReply(NodeNum to, const char *msg)
+void LoBBSModule::sendReply(NodeNum to, const std::string &msg)
 {
     meshtastic_MeshPacket *reply = allocDataPacket();
-    reply->decoded.payload.size = strlen(msg);
-    memcpy(reply->decoded.payload.bytes, msg, reply->decoded.payload.size);
+    reply->decoded.payload.size = std::min(msg.size(), (size_t)sizeof(reply->decoded.payload.bytes));
+    memcpy(reply->decoded.payload.bytes, msg.c_str(), reply->decoded.payload.size);
     reply->to = to;
     reply->decoded.want_response = false;
     service->sendToMesh(reply);

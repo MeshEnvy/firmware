@@ -1,10 +1,21 @@
 #include "LoBBSDal.h"
 #include "configuration.h"
 #include "gps/RTC.h"
-
 #include <SHA256.h>
 #include <cctype>
 #include <cstring>
+
+// Helper: normalize username to lowercase for case-insensitive lookups
+static void normalizeUsername(const char *username, char *normalized)
+{
+    size_t len = strlen(username);
+    if (len > LOBBS_MAX_USERNAME_LEN)
+        len = LOBBS_MAX_USERNAME_LEN;
+    for (size_t i = 0; i < len; i++) {
+        normalized[i] = tolower(username[i]);
+    }
+    normalized[len] = '\0';
+}
 
 LoBBSDal::LoBBSDal(uint32_t hostNodeId) : hostNodeId(hostNodeId)
 {
@@ -63,8 +74,12 @@ void LoBBSDal::hashPassword(const char *password, uint8_t *hash)
 
 bool LoBBSDal::loadUserByUsername(const char *username, meshtastic_LoBBSUser *user)
 {
+    // Normalize username to lowercase for case-insensitive lookup
+    char normalized[LOBBS_USERNAME_BUFFER_SIZE];
+    normalizeUsername(username, normalized);
+
     // Convert username to UUID with host node ID as salt
-    lodb_uuid_t userUuid = lodb_new_uuid(username, hostNodeId);
+    lodb_uuid_t userUuid = lodb_new_uuid(normalized, hostNodeId);
     LoDbError err = db->get("users", userUuid, user);
     if (err == LODB_OK) {
         LOG_DEBUG("Loaded user by username: %s", username);
@@ -104,8 +119,12 @@ bool LoBBSDal::loadUserByNodeId(uint32_t nodeId, meshtastic_LoBBSUser *user)
 
 bool LoBBSDal::createUser(const char *username, const char *password, uint32_t nodeId)
 {
+    // Normalize username to lowercase for case-insensitive storage
+    char normalized[LOBBS_USERNAME_BUFFER_SIZE];
+    normalizeUsername(username, normalized);
+
     // Calculate UUID first (username with host node ID as salt)
-    lodb_uuid_t userUuid = lodb_new_uuid(username, hostNodeId);
+    lodb_uuid_t userUuid = lodb_new_uuid(normalized, hostNodeId);
 
     // Create user record
     meshtastic_LoBBSUser user = meshtastic_LoBBSUser_init_zero;
@@ -134,9 +153,13 @@ bool LoBBSDal::verifyPassword(const meshtastic_LoBBSUser *user, const char *pass
 
 bool LoBBSDal::loginUser(const char *username, uint32_t nodeId)
 {
+    // Normalize username to lowercase for case-insensitive lookup
+    char normalized[LOBBS_USERNAME_BUFFER_SIZE];
+    normalizeUsername(username, normalized);
+
     // Create session record
     meshtastic_LoBBSSession session = meshtastic_LoBBSSession_init_zero;
-    session.user_uuid = lodb_new_uuid(username, hostNodeId);
+    session.user_uuid = lodb_new_uuid(normalized, hostNodeId);
     session.node_id = nodeId;
     session.last_login_time = getTime();
 

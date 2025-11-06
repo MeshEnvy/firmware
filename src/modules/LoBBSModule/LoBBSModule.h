@@ -35,5 +35,5 @@ class LoBBSModule : public SinglePortModule
     // Data access layer for database operations
     LoBBSDal *dal;
 
-    void sendReply(NodeNum to, const char *msg);
+    void sendReply(NodeNum to, const std::string &msg);
 };

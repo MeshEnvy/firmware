@@ -5,42 +5,19 @@
 #include "gps/RTC.h"
 #include <Arduino.h>
 #include <SHA256.h>
+#include <algorithm>
 #include <cstring>
 #include <pb_decode.h>
 #include <pb_encode.h>
 
 /**
- * LoDB Implementation - Cursor-based Cooperative Design
+ * LoDB Implementation - Synchronous Design
  *
  * Threading Model:
  * - All filesystem operations use LockGuard(spiLock) for thread safety
- * - Single-record operations (insert, get, update, delete) complete immediately
- * - SELECT uses cursors that advance one record at a time for OSThread cooperation
- * - Each cursor advance is a natural yield point for cooperative scheduling
+ * - All operations complete immediately and return results synchronously
+ * - SELECT returns complete result sets with optional filtering, sorting, and limiting
  */
-
-// Cursor structure for cooperative iteration
-struct LoDbCursor {
-    LoDb *db; // Parent database
-    std::string table_name;
-    const pb_msgdesc_t *pb_descriptor;
-    size_t record_size;
-    char table_path[160];
-
-    LoDbFilter filter;
-    void *filter_context;
-
-    // Streaming directory iteration (one file at a time!)
-#ifdef FSCom
-    File *dir_handle; // Pointer to open directory handle for streaming
-#endif
-    bool dir_exhausted; // True when we've read all files
-
-    // Current record state
-    uint8_t *current_record; // Buffer for decoded record
-    lodb_uuid_t current_uuid;
-    bool has_current;
-};
 
 // Convert UUID to 16-character hex string
 void lodb_uuid_to_hex(lodb_uuid_t uuid, char hex_out[17])
@@ -392,217 +369,136 @@ LoDbError LoDb::deleteRecord(const char *table_name, lodb_uuid_t uuid)
 #endif
 }
 
-// Create a cursor for iterating through records
-LoDbCursor *LoDb::selectCursor(const char *table_name, LoDbFilter filter, void *context)
+// Select records with optional filtering, sorting, and limiting
+std::vector<void *> LoDb::select(const char *table_name, LoDbFilter filter, LoDbComparator comparator, size_t limit)
 {
+    std::vector<void *> results;
+
     if (!table_name) {
-        return nullptr;
+        LOG_ERROR("Invalid table_name");
+        return results;
     }
 
     TableMetadata *table = getTable(table_name);
     if (!table) {
-        return nullptr;
-    }
-
-    // Allocate cursor
-    LoDbCursor *cursor = new LoDbCursor();
-    if (!cursor) {
-        LOG_ERROR("Failed to allocate cursor");
-        return nullptr;
-    }
-
-    cursor->db = this;
-    cursor->table_name = table_name;
-    cursor->pb_descriptor = table->pb_descriptor;
-    cursor->record_size = table->record_size;
-    strncpy(cursor->table_path, table->table_path, sizeof(cursor->table_path) - 1);
-    cursor->filter = filter;
-    cursor->filter_context = context;
-    cursor->dir_exhausted = false;
-    cursor->has_current = false;
-    cursor->current_record = new uint8_t[table->record_size];
-
-    if (!cursor->current_record) {
-        LOG_ERROR("Failed to allocate cursor record buffer");
-        delete cursor;
-        return nullptr;
+        LOG_ERROR("Table not found: %s", table_name);
+        return results;
     }
 
 #ifdef FSCom
-    // Open directory for streaming (one file at a time!)
+    // PHASE 1: FILTER - iterate directory and collect matching records
     {
         concurrency::LockGuard g(spiLock);
 
-        File dir = FSCom.open(cursor->table_path, FILE_O_READ);
+        File dir = FSCom.open(table->table_path, FILE_O_READ);
         if (!dir) {
-            LOG_DEBUG("Table directory not found: %s", cursor->table_path);
-            cursor->dir_handle = nullptr;
-            cursor->dir_exhausted = true; // Empty table, mark as done
-            return cursor;
+            LOG_DEBUG("Table directory not found: %s", table->table_path);
+            return results; // Empty result set
         }
 
         if (!dir.isDirectory()) {
-            LOG_ERROR("Table path is not a directory: %s", cursor->table_path);
+            LOG_ERROR("Table path is not a directory: %s", table->table_path);
             dir.close();
-            delete[] cursor->current_record;
-            delete cursor;
-            return nullptr;
+            return results;
         }
 
-        // Allocate File on heap and move/copy into it
-        cursor->dir_handle = new File(dir);
-    }
+        // Iterate through all files in directory
+        while (true) {
+            File file = dir.openNextFile();
+            if (!file) {
+                break; // No more files
+            }
 
-    LOG_DEBUG("Cursor created for streaming directory: %s", cursor->table_path);
-#else
-    cursor->dir_handle = nullptr;
-    cursor->dir_exhausted = true; // No filesystem, mark as done
-#endif
+            // Skip directories
+            if (file.isDirectory()) {
+                file.close();
+                continue;
+            }
 
-    return cursor;
-}
-
-// Advance cursor to next file and check if it matches
-// COOPERATIVE: Processes exactly ONE file, then returns (no recursion!)
-bool lodb_cursor_next(LoDbCursor *cursor)
-{
-    if (!cursor || cursor->dir_exhausted) {
-        return false;
-    }
-
-    cursor->has_current = false;
-
-#ifdef FSCom
-    // Read exactly ONE file from directory (cooperative yield point!)
-    std::string pathStr;
-    {
-        concurrency::LockGuard g(spiLock);
-        if (!cursor->dir_handle) {
-            cursor->dir_exhausted = true;
-            return false;
-        }
-
-        File file = cursor->dir_handle->openNextFile();
-
-        if (!file) {
-            // No more files in directory
-            cursor->dir_exhausted = true;
-            LOG_DEBUG("Cursor exhausted all files");
-            return false;
-        }
-
-        // Skip directories - return false but don't mark exhausted
-        if (file.isDirectory()) {
+            // Get filename
+            std::string pathStr = file.name();
             file.close();
-            LOG_DEBUG("Skipped directory entry");
-            return false; // Caller will call again for next file
+
+            // Extract just the filename (after last /)
+            size_t lastSlash = pathStr.rfind('/');
+            std::string filename = (lastSlash != std::string::npos) ? pathStr.substr(lastSlash + 1) : pathStr;
+
+            // Extract UUID (remove .pr extension)
+            size_t prPos = filename.find(".pr");
+            if (prPos == std::string::npos) {
+                LOG_DEBUG("Skipped non-.pr file: %s", filename.c_str());
+                continue;
+            }
+
+            std::string uuid_hex_str = filename.substr(0, prPos);
+
+            // Parse hex string to uint64_t UUID
+            lodb_uuid_t uuid;
+            uint32_t high, low;
+            if (sscanf(uuid_hex_str.c_str(), "%08x%08x", &high, &low) != 2) {
+                LOG_WARN("Failed to parse UUID from filename: %s", uuid_hex_str.c_str());
+                continue;
+            }
+            uuid = ((uint64_t)high << 32) | (uint64_t)low;
+
+            // Allocate buffer for record
+            uint8_t *record_buffer = new uint8_t[table->record_size];
+            if (!record_buffer) {
+                LOG_ERROR("Failed to allocate record buffer");
+                continue;
+            }
+
+            // Read and decode the record (releases spiLock internally)
+            memset(record_buffer, 0, table->record_size);
+
+            // We need to release the lock before calling get() since it acquires it
+            g.~LockGuard(); // Release lock
+            LoDbError err = get(table_name, uuid, record_buffer);
+            new (&g) concurrency::LockGuard(spiLock); // Re-acquire lock
+
+            if (err != LODB_OK) {
+                LOG_WARN("Failed to read record " LODB_UUID_FMT " during select", LODB_UUID_ARGS(uuid));
+                delete[] record_buffer;
+                continue;
+            }
+
+            // Apply filter if provided
+            if (filter && !filter(record_buffer)) {
+                LOG_DEBUG("Record " LODB_UUID_FMT " filtered out", LODB_UUID_ARGS(uuid));
+                delete[] record_buffer;
+                continue;
+            }
+
+            // Record passed filter, add to results
+            results.push_back(record_buffer);
+            LOG_DEBUG("Added record " LODB_UUID_FMT " to results", LODB_UUID_ARGS(uuid));
         }
 
-        // Extract UUID from filename
-        pathStr = file.name();
-        file.close(); // Done with file handle
+        dir.close();
     }
 
-    // Extract just the filename (after last /)
-    size_t lastSlash = pathStr.rfind('/');
-    std::string filename = (lastSlash != std::string::npos) ? pathStr.substr(lastSlash + 1) : pathStr;
+    LOG_INFO("Select from %s: %d records after filtering", table_name, results.size());
 
-    // Extract UUID (remove .pr extension)
-    size_t prPos = filename.find(".pr");
-    if (prPos == std::string::npos) {
-        // Not a .pr file, skip it
-        LOG_DEBUG("Skipped non-.pr file: %s", filename.c_str());
-        return false; // Caller will call again for next file
+    // PHASE 2: SORT - sort results if comparator provided
+    if (comparator && !results.empty()) {
+        std::sort(results.begin(), results.end(), [comparator](const void *a, const void *b) { return comparator(a, b) < 0; });
+        LOG_DEBUG("Sorted %d records", results.size());
     }
 
-    std::string uuid_hex_str = filename.substr(0, prPos);
-
-    // Parse hex string to uint64_t UUID
-    lodb_uuid_t uuid;
-    uint32_t high, low;
-    if (sscanf(uuid_hex_str.c_str(), "%08x%08x", &high, &low) != 2) {
-        LOG_WARN("Failed to parse UUID from filename: %s", uuid_hex_str.c_str());
-        return false; // Caller will call again for next file
-    }
-    uuid = ((uint64_t)high << 32) | (uint64_t)low;
-
-    // Read and decode the record
-    memset(cursor->current_record, 0, cursor->record_size);
-    LoDbError err = cursor->db->get(cursor->table_name.c_str(), uuid, cursor->current_record);
-
-    if (err != LODB_OK) {
-        LOG_WARN("Failed to read record " LODB_UUID_FMT " during cursor iteration", LODB_UUID_ARGS(uuid));
-        return false; // Caller will call again for next file
+    // PHASE 3: LIMIT - apply limit if specified
+    if (limit > 0 && results.size() > limit) {
+        // Free records beyond limit
+        for (size_t i = limit; i < results.size(); i++) {
+            delete[] (uint8_t *)results[i];
+        }
+        results.resize(limit);
+        LOG_DEBUG("Limited results to %d records", limit);
     }
 
-    // Apply filter if provided
-    if (cursor->filter && !cursor->filter(cursor->current_record, cursor->filter_context)) {
-        LOG_DEBUG("Record " LODB_UUID_FMT " filtered out", LODB_UUID_ARGS(uuid));
-        return false; // Doesn't match, caller will call again
-    }
-
-    // Found a matching record!
-    cursor->current_uuid = uuid;
-    cursor->has_current = true;
-
-    LOG_DEBUG("Cursor found matching record: " LODB_UUID_FMT, LODB_UUID_ARGS(cursor->current_uuid));
-    return true; // Match found!
+    LOG_INFO("Select from %s complete: %d records returned", table_name, results.size());
 #else
-    cursor->dir_exhausted = true;
-    return false;
-#endif
-}
-
-// Check if cursor is exhausted (no more files to process)
-bool lodb_cursor_is_exhausted(LoDbCursor *cursor)
-{
-    if (!cursor) {
-        return true;
-    }
-    return cursor->dir_exhausted;
-}
-
-// Get the current record from cursor
-const void *lodb_cursor_get(LoDbCursor *cursor)
-{
-    if (!cursor || !cursor->has_current) {
-        return nullptr;
-    }
-    return cursor->current_record;
-}
-
-// Get the UUID of the current record
-lodb_uuid_t lodb_cursor_get_uuid(LoDbCursor *cursor)
-{
-    if (!cursor || !cursor->has_current) {
-        return 0;
-    }
-    return cursor->current_uuid;
-}
-
-// Close cursor and free resources
-void lodb_cursor_close(LoDbCursor *cursor)
-{
-    if (!cursor) {
-        return;
-    }
-
-#ifdef FSCom
-    // Close directory handle if still open
-    if (cursor->dir_handle) {
-        {
-            concurrency::LockGuard g(spiLock);
-            cursor->dir_handle->close();
-        }
-        delete cursor->dir_handle;
-        cursor->dir_handle = nullptr;
-    }
+    LOG_ERROR("Filesystem not available");
 #endif
 
-    if (cursor->current_record) {
-        delete[] cursor->current_record;
-    }
-
-    delete cursor;
-    LOG_DEBUG("Cursor closed");
+    return results;
 }

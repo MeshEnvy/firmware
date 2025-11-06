@@ -4,6 +4,14 @@
 #include "lodb/LoDB.h"
 #include <stdint.h>
 
+// Maximum username length (from lobbs.options: meshtastic.LoBBSUser.username max_size:32)
+#define LOBBS_MAX_USERNAME_LEN 32
+#define LOBBS_USERNAME_BUFFER_SIZE (LOBBS_MAX_USERNAME_LEN + 1) // +1 for null terminator
+
+// Stringify macro for converting numeric defines to string literals
+#define LOBBS_XSTR(x) LOBBS_STR(x)
+#define LOBBS_STR(x) #x
+
 /**
  * LoBBS Data Access Layer
  *
