@@ -7,3 +7,6 @@
 [submodule "src/lodb"]
 	path = src/lodb
 	url = git@github.com:MeshEnvy/lodb.git
+[submodule "src/modules/LoBBSModule"]
+	path = src/modules/LoBBSModule
+	url = git@github.com:MeshEnvy/lobbs.git
