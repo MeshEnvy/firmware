@@ -4,9 +4,9 @@
 [submodule "meshtestic"]
 	path = meshtestic
 	url = https://github.com/meshtastic/meshTestic
-[submodule "src/lodb"]
-	path = src/lodb
+[submodule "community/lodb"]
+	path = community/lodb
 	url = git@github.com:MeshEnvy/lodb.git
-[submodule "src/modules/LoBBSModule"]
-	path = src/modules/LoBBSModule
+[submodule "community/lobbs"]
+	path = community/lobbs
 	url = git@github.com:MeshEnvy/lobbs.git
