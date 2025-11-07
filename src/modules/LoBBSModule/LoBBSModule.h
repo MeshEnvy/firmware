@@ -2,7 +2,6 @@
 
 #include "LoBBSDal.h"
 #include "SinglePortModule.h"
-#include "TextMessageSender.h"
 #include "lobbs.pb.h"
 
 #define LOBBS_VERSION "1.0.0"
@@ -22,6 +21,7 @@ class LoBBSModule : public SinglePortModule
 {
   public:
     LoBBSModule();
+    static constexpr size_t MAX_REPLY_BYTES = 200;
 
   protected:
     /**

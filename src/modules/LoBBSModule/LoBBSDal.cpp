@@ -27,6 +27,13 @@ static void buildNewsReadKey(uint64_t newsUuid, uint64_t userUuid, char *out, si
     snprintf(out, outSize, "%s:%s", newsHex, userHex);
 }
 
+static lodb_uuid_t usernameToUuid(const char *username, uint32_t hostNodeId)
+{
+    char normalized[LOBBS_USERNAME_BUFFER_SIZE];
+    normalizeUsername(username, normalized);
+    return lodb_new_uuid(normalized, hostNodeId);
+}
+
 LoBBSDal::LoBBSDal(uint32_t hostNodeId) : hostNodeId(hostNodeId)
 {
     // Initialize LoDB database
@@ -87,12 +94,8 @@ void LoBBSDal::hashPassword(const char *password, uint8_t *hash)
 
 bool LoBBSDal::loadUserByUsername(const char *username, meshtastic_LoBBSUser *user)
 {
-    // Normalize username to lowercase for case-insensitive lookup
-    char normalized[LOBBS_USERNAME_BUFFER_SIZE];
-    normalizeUsername(username, normalized);
-
     // Convert username to UUID with host node ID as salt
-    lodb_uuid_t userUuid = lodb_new_uuid(normalized, hostNodeId);
+    lodb_uuid_t userUuid = usernameToUuid(username, hostNodeId);
     LoDbError err = db->get("users", userUuid, user);
     if (err == LODB_OK) {
         LOG_DEBUG("Loaded user by username: %s", username);
@@ -132,12 +135,8 @@ bool LoBBSDal::loadUserByNodeId(uint32_t nodeId, meshtastic_LoBBSUser *user)
 
 bool LoBBSDal::createUser(const char *username, const char *password, uint32_t nodeId)
 {
-    // Normalize username to lowercase for case-insensitive storage
-    char normalized[LOBBS_USERNAME_BUFFER_SIZE];
-    normalizeUsername(username, normalized);
-
     // Calculate UUID first (username with host node ID as salt)
-    lodb_uuid_t userUuid = lodb_new_uuid(normalized, hostNodeId);
+    lodb_uuid_t userUuid = usernameToUuid(username, hostNodeId);
 
     // Create user record
     meshtastic_LoBBSUser user = meshtastic_LoBBSUser_init_zero;
@@ -166,13 +165,9 @@ bool LoBBSDal::verifyPassword(const meshtastic_LoBBSUser *user, const char *pass
 
 bool LoBBSDal::loginUser(const char *username, uint32_t nodeId)
 {
-    // Normalize username to lowercase for case-insensitive lookup
-    char normalized[LOBBS_USERNAME_BUFFER_SIZE];
-    normalizeUsername(username, normalized);
-
     // Create session record
     meshtastic_LoBBSSession session = meshtastic_LoBBSSession_init_zero;
-    session.user_uuid = lodb_new_uuid(normalized, hostNodeId);
+    session.user_uuid = usernameToUuid(username, hostNodeId);
     session.node_id = nodeId;
     session.last_login_time = getTime();
 
@@ -210,12 +205,8 @@ bool LoBBSDal::logoutUser(uint32_t nodeId)
 
 uint64_t LoBBSDal::getUserUuidByUsername(const char *username)
 {
-    // Normalize username to lowercase for case-insensitive lookup
-    char normalized[LOBBS_USERNAME_BUFFER_SIZE];
-    normalizeUsername(username, normalized);
-
     // Convert username to UUID with host node ID as salt
-    uint64_t userUuid = lodb_new_uuid(normalized, hostNodeId);
+    uint64_t userUuid = usernameToUuid(username, hostNodeId);
 
     // Verify user exists
     meshtastic_LoBBSUser user = meshtastic_LoBBSUser_init_zero;

@@ -37,6 +37,30 @@ static int compareUsernames(const void *a, const void *b)
     return strcasecmp(u1->username, u2->username);
 }
 
+// Static helper: load a user by UUID
+static bool loadUserByUuid(LoBBSDal *dal, uint64_t uuid, meshtastic_LoBBSUser *outUser)
+{
+    auto users = dal->getDb()->select(
+        "users",
+        [uuid](const void *rec) -> bool {
+            const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)rec;
+            return u->uuid == uuid;
+        },
+        nullptr);
+
+    bool found = false;
+    if (!users.empty()) {
+        *outUser = *(const meshtastic_LoBBSUser *)users[0];
+        found = true;
+    }
+
+    for (auto *userPtr : users) {
+        delete[] (uint8_t *)userPtr;
+    }
+
+    return found;
+}
+
 // Static helper: format time ago (e.g., "2h ago", "5m ago", "1d ago")
 static void formatTimeAgo(uint32_t timestamp, char *buffer, size_t bufferSize)
 {
@@ -72,6 +96,22 @@ static void truncateMessage(const char *message, char *buffer, size_t bufferSize
         buffer[copyLen] = '\0';
         strncat(buffer, "...", bufferSize - strlen(buffer) - 1);
     }
+}
+
+static void freeMailMessages(std::vector<void *> &mailMessages)
+{
+    for (auto *mailPtr : mailMessages) {
+        delete[] (uint8_t *)mailPtr;
+    }
+    mailMessages.clear();
+}
+
+static void freeNewsEntries(std::vector<LoBBSNewsEntry> &newsItems)
+{
+    for (auto &entry : newsItems) {
+        delete[] (uint8_t *)entry.news;
+    }
+    newsItems.clear();
 }
 
 LoBBSModule::LoBBSModule() : SinglePortModule("LoBBS", meshtastic_PortNum_TEXT_MESSAGE_APP)
@@ -385,10 +425,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
             // Read specific message
             if (readMessageId > (int)mailMessages.size()) {
                 sendReply(mp.from, "Invalid message number");
-                // Free mail records
-                for (auto *mailPtr : mailMessages) {
-                    delete[] (uint8_t *)mailPtr;
-                }
+                freeMailMessages(mailMessages);
                 return ProcessMessage::CONTINUE;
             }
 
@@ -396,22 +433,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 
             // Get sender username
             meshtastic_LoBBSUser sender = meshtastic_LoBBSUser_init_zero;
-            bool foundSender = false;
-            auto users = dal->getDb()->select(
-                "users",
-                [mail](const void *rec) -> bool {
-                    const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)rec;
-                    return u->uuid == mail->from_user_uuid;
-                },
-                nullptr);
-            if (!users.empty()) {
-                sender = *(const meshtastic_LoBBSUser *)users[0];
-                foundSender = true;
-            }
-            // Free user records
-            for (auto *userPtr : users) {
-                delete[] (uint8_t *)userPtr;
-            }
+            bool foundSender = loadUserByUuid(dal, mail->from_user_uuid, &sender);
 
             // Format time
             char timeStr[32];
@@ -431,10 +453,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
             // Mark as read
             dal->markMailAsRead(mail->uuid);
 
-            // Free mail records
-            for (auto *mailPtr : mailMessages) {
-                delete[] (uint8_t *)mailPtr;
-            }
+            freeMailMessages(mailMessages);
             return ProcessMessage::CONTINUE;
         }
 
@@ -466,22 +485,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 
             // Get sender username
             meshtastic_LoBBSUser sender = meshtastic_LoBBSUser_init_zero;
-            bool foundSender = false;
-            auto users = dal->getDb()->select(
-                "users",
-                [mail](const void *rec) -> bool {
-                    const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)rec;
-                    return u->uuid == mail->from_user_uuid;
-                },
-                nullptr);
-            if (!users.empty()) {
-                sender = *(const meshtastic_LoBBSUser *)users[0];
-                foundSender = true;
-            }
-            // Free user records
-            for (auto *userPtr : users) {
-                delete[] (uint8_t *)userPtr;
-            }
+            bool foundSender = loadUserByUuid(dal, mail->from_user_uuid, &sender);
 
             // Format message entry
             char entryBuffer[256];
@@ -498,10 +502,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 
         sendReply(mp.from, mailList.c_str());
 
-        // Free mail records
-        for (auto *mailPtr : mailMessages) {
-            delete[] (uint8_t *)mailPtr;
-        }
+        freeMailMessages(mailMessages);
 
         return ProcessMessage::CONTINUE;
     }
@@ -582,9 +583,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
         if (isReadCommand && readNewsId > 0) {
             if (readNewsId > (int)newsItems.size()) {
                 sendReply(mp.from, "Invalid news number");
-                for (auto &entry : newsItems) {
-                    delete[] (uint8_t *)entry.news;
-                }
+                freeNewsEntries(newsItems);
                 return ProcessMessage::CONTINUE;
             }
 
@@ -593,21 +592,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 
             // Get author username
             meshtastic_LoBBSUser author = meshtastic_LoBBSUser_init_zero;
-            bool foundAuthor = false;
-            auto users = dal->getDb()->select(
-                "users",
-                [news](const void *rec) -> bool {
-                    const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)rec;
-                    return u->uuid == news->author_user_uuid;
-                },
-                nullptr);
-            if (!users.empty()) {
-                author = *(const meshtastic_LoBBSUser *)users[0];
-                foundAuthor = true;
-            }
-            for (auto *userPtr : users) {
-                delete[] (uint8_t *)userPtr;
-            }
+            bool foundAuthor = loadUserByUuid(dal, news->author_user_uuid, &author);
 
             char timeStr[32];
             formatTimeAgo(news->timestamp, timeStr, sizeof(timeStr));
@@ -624,9 +609,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 
             dal->markNewsAsRead(news->uuid, existingUser.uuid);
 
-            for (auto &entryToFree : newsItems) {
-                delete[] (uint8_t *)entryToFree.news;
-            }
+            freeNewsEntries(newsItems);
             return ProcessMessage::CONTINUE;
         }
 
@@ -653,21 +636,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
             const meshtastic_LoBBSNews *news = entry.news;
 
             meshtastic_LoBBSUser author = meshtastic_LoBBSUser_init_zero;
-            bool foundAuthor = false;
-            auto users = dal->getDb()->select(
-                "users",
-                [news](const void *rec) -> bool {
-                    const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)rec;
-                    return u->uuid == news->author_user_uuid;
-                },
-                nullptr);
-            if (!users.empty()) {
-                author = *(const meshtastic_LoBBSUser *)users[0];
-                foundAuthor = true;
-            }
-            for (auto *userPtr : users) {
-                delete[] (uint8_t *)userPtr;
-            }
+            bool foundAuthor = loadUserByUuid(dal, news->author_user_uuid, &author);
 
             char entryBuffer[256];
             char timeStr[32];
@@ -683,9 +652,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 
         sendReply(mp.from, newsList.c_str());
 
-        for (auto &entry : newsItems) {
-            delete[] (uint8_t *)entry.news;
-        }
+        freeNewsEntries(newsItems);
 
         return ProcessMessage::CONTINUE;
     }
@@ -696,7 +663,7 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
                                        "@user <msg> - Send mail\n"
                                        "/news [<n>|r <n>|l <n>|<n>-] - List/read news\n"
                                        "/news <msg> - Post news";
-    LOG_DEBUG("Help message: %s", helpMsg);
+    LOG_DEBUG("Help message: %s", helpMsg.c_str());
     sendReply(mp.from, helpMsg);
     return ProcessMessage::CONTINUE;
 }
@@ -704,8 +671,20 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
 void LoBBSModule::sendReply(NodeNum to, const std::string &msg)
 {
     meshtastic_MeshPacket *reply = allocDataPacket();
-    reply->decoded.payload.size = std::min(msg.size(), (size_t)sizeof(reply->decoded.payload.bytes));
-    memcpy(reply->decoded.payload.bytes, msg.c_str(), reply->decoded.payload.size);
+    static constexpr char truncMarker[] = "[...]";
+    static constexpr size_t truncMarkerLen = sizeof(truncMarker) - 1;
+
+    bool isTruncated = msg.size() > MAX_REPLY_BYTES;
+    size_t payloadSize = isTruncated ? MAX_REPLY_BYTES : msg.size();
+    reply->decoded.payload.size = payloadSize;
+
+    if (isTruncated) {
+        size_t copyLen = MAX_REPLY_BYTES > truncMarkerLen ? MAX_REPLY_BYTES - truncMarkerLen : 0;
+        memcpy(reply->decoded.payload.bytes, msg.c_str(), copyLen);
+        memcpy(reply->decoded.payload.bytes + copyLen, truncMarker, truncMarkerLen);
+    } else {
+        memcpy(reply->decoded.payload.bytes, msg.c_str(), payloadSize);
+    }
     reply->to = to;
     reply->decoded.want_response = false;
     service->sendToMesh(reply);
