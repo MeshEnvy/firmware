@@ -8,11 +8,21 @@ import json
 import re
 import time
 from datetime import datetime
+from typing import Optional
 
 from readprops import readProps
 
-Import("env")
-platform = env.PioPlatform()
+try:
+    from SCons.Script import Import as scons_import  # type: ignore
+except Exception:  # pragma: no cover
+    scons_import = None
+
+env = None  # type: ignore
+projenv = None  # type: ignore
+if scons_import is not None:
+    scons_import(["env", "projenv"])
+
+platform = env.PioPlatform() if env is not None else None
 
 
 def esp32_create_combined_bin(source, target, env):
@@ -63,9 +73,9 @@ def esp32_create_combined_bin(source, target, env):
     esptool.main(cmd)
 
 
-if platform.name == "espressif32":
+if platform and platform.name == "espressif32":
     sys.path.append(join(platform.get_package_dir("tool-esptoolpy")))
-    import esptool
+    import esptool  # type: ignore
 
     env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", esp32_create_combined_bin)
 
@@ -84,12 +94,10 @@ if platform.name == "espressif32":
         # For newer ESP32 targets, using newlib nano works better.
         env.Append(LINKFLAGS=["--specs=nano.specs", "-u", "_printf_float"])
 
-if platform.name == "nordicnrf52":
+if platform and platform.name == "nordicnrf52":
     env.AddPostAction("$BUILD_DIR/${PROGNAME}.hex",
                       env.VerboseAction(f"\"{sys.executable}\" ./bin/uf2conv.py \"$BUILD_DIR/firmware.hex\" -c -f 0xADA52840 -o \"$BUILD_DIR/firmware.uf2\"",
                                         "Generating UF2 file"))
-
-Import("projenv")
 
 prefsLoc = projenv["PROJECT_DIR"] + "/version.properties"
 verObj = readProps(prefsLoc)
@@ -182,5 +190,18 @@ def load_boot_logo(source, target, env):
 if ("HAS_TFT", 1) in env.get("CPPDEFINES", []):
     env.AddPreAction('$BUILD_DIR/littlefs.bin', load_boot_logo)
 
-# Load LoBBS protobuf generation script
-env.SConscript("../src/modules/LoBBSModule/gen_lobbs_proto.py", exports="env")
+
+# Ensure LoDB helper utilities are available when LoDB is vendored as a submodule
+lodb_helper_path = join(env["PROJECT_DIR"], "src", "lodb") if env else None
+if lodb_helper_path and lodb_helper_path not in sys.path:
+    sys.path.append(lodb_helper_path)
+
+try:
+    from gen_proto import register_protobufs  # type: ignore
+    register_protobufs(
+        env,
+        "$BUILD_DIR/src/modules/LoBBSModule/LoBBSModule.cpp.o",
+        "$PROJECT_DIR/src/modules/LoBBSModule/lobbs.proto",
+    )
+except Exception:
+    print("Warning: gen_proto utilities not found; protobufs will not auto-regenerate")

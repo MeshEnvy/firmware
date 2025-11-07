@@ -98,6 +98,27 @@ class LoBBSDal
     bool markMailAsRead(uint64_t mailUuid);
 
     /**
+     * Post a news item
+     */
+    bool postNews(uint64_t authorUserUuid, const char *message);
+
+    /**
+     * Get news for a user (with read status, sorted unread first then by timestamp desc)
+     * Returns vector of news records - caller must free
+     */
+    std::vector<void *> getNewsForUser(uint64_t userUuid, uint32_t offset, uint32_t limit);
+
+    /**
+     * Check if a news item has been read by a user
+     */
+    bool isNewsReadByUser(uint64_t newsUuid, uint64_t userUuid);
+
+    /**
+     * Mark a news item as read by a user
+     */
+    bool markNewsAsRead(uint64_t newsUuid, uint64_t userUuid);
+
+    /**
      * Get the underlying database instance
      */
     LoDb *getDb() { return db; }

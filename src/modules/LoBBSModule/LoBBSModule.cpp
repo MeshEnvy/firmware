@@ -512,11 +512,206 @@ ProcessMessage LoBBSModule::handleReceived(const meshtastic_MeshPacket &mp)
         return ProcessMessage::CONTINUE;
     }
 
+    if (strcasecmp(cmdName, "/news") == 0) {
+        LOG_INFO("Processing /news command from node=0x%0x", mp.from);
+
+        // Parse optional arguments
+        char *arg1 = strtok(NULL, " ");
+        char *arg2 = strtok(NULL, " ");
+
+        // Check if this is a news post (arg1 starts with a letter)
+        if (arg1 && isalpha(arg1[0])) {
+            // This is a news post - get the full message from original payload
+            // Find where the message starts (after "/news ")
+            const char *msgStart = (const char *)mp.decoded.payload.bytes;
+            while (*msgStart && *msgStart != ' ')
+                msgStart++; // Skip "/news"
+            if (*msgStart == ' ')
+                msgStart++; // Skip the space
+
+            if (*msgStart == '\0') {
+                sendReply(mp.from, "News message cannot be empty");
+                return ProcessMessage::CONTINUE;
+            }
+
+            // Post the news
+            std::string newsMessage(msgStart, mp.decoded.payload.size - (msgStart - (const char *)mp.decoded.payload.bytes));
+            if (dal->postNews(existingUser.uuid, newsMessage.c_str())) {
+                sendReply(mp.from, "News posted");
+            } else {
+                sendReply(mp.from, "Failed to post news");
+            }
+            return ProcessMessage::CONTINUE;
+        }
+
+        // Not a news post, handle as list/read command
+        uint32_t offset = 0;
+        int readNewsId = -1;
+        bool isReadCommand = false;
+
+        if (arg1) {
+            // Check for "/news r <n>" or "/news l <n>"
+            if (strcasecmp(arg1, "r") == 0 && arg2) {
+                readNewsId = atoi(arg2);
+                isReadCommand = true;
+            } else if (strcasecmp(arg1, "l") == 0 && arg2) {
+                offset = atoi(arg2);
+                if (offset > 0)
+                    offset--; // Convert to 0-based
+            } else if (isdigit(arg1[0])) {
+                // Check for "/news <n>" or "/news <n>-"
+                char *argCopy = arg1;
+                size_t len = strlen(argCopy);
+                if (len > 0 && argCopy[len - 1] == '-') {
+                    // "/news <n>-" format for listing from offset
+                    argCopy[len - 1] = '\0';
+                    offset = atoi(argCopy);
+                    if (offset > 0)
+                        offset--; // Convert to 0-based
+                } else {
+                    // "/news <n>" format for reading news
+                    readNewsId = atoi(argCopy);
+                    isReadCommand = true;
+                }
+            }
+        }
+
+        // Get news for current user
+        const uint32_t NEWS_PAGE_SIZE = 10;
+        auto newsItems = dal->getNewsForUser(existingUser.uuid, offset, NEWS_PAGE_SIZE);
+
+        if (isReadCommand && readNewsId > 0) {
+            // Read specific news item
+            if (readNewsId > (int)newsItems.size()) {
+                sendReply(mp.from, "Invalid news number");
+                // Free news records
+                for (auto *newsPtr : newsItems) {
+                    delete[] (uint8_t *)newsPtr;
+                }
+                return ProcessMessage::CONTINUE;
+            }
+
+            const meshtastic_LoBBSNews *news = (const meshtastic_LoBBSNews *)newsItems[readNewsId - 1];
+
+            // Get author username
+            meshtastic_LoBBSUser author = meshtastic_LoBBSUser_init_zero;
+            bool foundAuthor = false;
+            auto users = dal->getDb()->select(
+                "users",
+                [news](const void *rec) -> bool {
+                    const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)rec;
+                    return u->uuid == news->author_user_uuid;
+                },
+                nullptr);
+            if (!users.empty()) {
+                author = *(const meshtastic_LoBBSUser *)users[0];
+                foundAuthor = true;
+            }
+            // Free user records
+            for (auto *userPtr : users) {
+                delete[] (uint8_t *)userPtr;
+            }
+
+            // Format time
+            char timeStr[32];
+            formatTimeAgo(news->timestamp, timeStr, sizeof(timeStr));
+
+            // Build message
+            std::string reply;
+            reply += "From: @";
+            reply += foundAuthor ? author.username : "unknown";
+            reply += " (";
+            reply += timeStr;
+            reply += ")\n";
+            reply += news->message;
+
+            sendReply(mp.from, reply.c_str());
+
+            // Mark as read
+            dal->markNewsAsRead(news->uuid, existingUser.uuid);
+
+            // Free news records
+            for (auto *newsPtr : newsItems) {
+                delete[] (uint8_t *)newsPtr;
+            }
+            return ProcessMessage::CONTINUE;
+        }
+
+        // List news (default action)
+        if (newsItems.empty()) {
+            sendReply(mp.from, "No news");
+            return ProcessMessage::CONTINUE;
+        }
+
+        // Count unread news items
+        int unreadCount = 0;
+        for (auto *newsPtr : newsItems) {
+            const meshtastic_LoBBSNews *news = (const meshtastic_LoBBSNews *)newsPtr;
+            if (!dal->isNewsReadByUser(news->uuid, existingUser.uuid)) {
+                unreadCount++;
+            }
+        }
+
+        // Build news list
+        std::string newsList;
+        if (unreadCount > 0) {
+            char unreadStr[32];
+            snprintf(unreadStr, sizeof(unreadStr), "(%d unread)\n", unreadCount);
+            newsList += unreadStr;
+        }
+
+        for (size_t i = 0; i < newsItems.size(); i++) {
+            const meshtastic_LoBBSNews *news = (const meshtastic_LoBBSNews *)newsItems[i];
+
+            // Get author username
+            meshtastic_LoBBSUser author = meshtastic_LoBBSUser_init_zero;
+            bool foundAuthor = false;
+            auto users = dal->getDb()->select(
+                "users",
+                [news](const void *rec) -> bool {
+                    const meshtastic_LoBBSUser *u = (const meshtastic_LoBBSUser *)rec;
+                    return u->uuid == news->author_user_uuid;
+                },
+                nullptr);
+            if (!users.empty()) {
+                author = *(const meshtastic_LoBBSUser *)users[0];
+                foundAuthor = true;
+            }
+            // Free user records
+            for (auto *userPtr : users) {
+                delete[] (uint8_t *)userPtr;
+            }
+
+            // Format news entry
+            char entryBuffer[256];
+            char timeStr[32];
+            char truncMsg[50];
+            formatTimeAgo(news->timestamp, timeStr, sizeof(timeStr));
+            truncateMessage(news->message, truncMsg, sizeof(truncMsg), 25);
+
+            bool isRead = dal->isNewsReadByUser(news->uuid, existingUser.uuid);
+
+            snprintf(entryBuffer, sizeof(entryBuffer), "[%d]%s @%s: %s (%s)\n", (int)(offset + i + 1), isRead ? "" : "*",
+                     foundAuthor ? author.username : "unknown", truncMsg, timeStr);
+
+            newsList += entryBuffer;
+        }
+
+        sendReply(mp.from, newsList.c_str());
+
+        // Free news records
+        for (auto *newsPtr : newsItems) {
+            delete[] (uint8_t *)newsPtr;
+        }
+
+        return ProcessMessage::CONTINUE;
+    }
+
     std::string helpMsg = LOBBS_HEADER "/bye - Logout\n"
                                        "/users [filter] - List users (optional filter)\n"
                                        "/mail [<n>|r <n>|l <n>|<n>-] - List/read mail\n"
                                        "@user <msg> - Send mail\n"
-                                       "/news - News (soon)";
+                                       "/news [<n>|r <n>|l <n>|<n>-|<msg>] - List/read/post news";
     LOG_DEBUG("Help message: %s", helpMsg);
     sendReply(mp.from, helpMsg);
     return ProcessMessage::CONTINUE;
