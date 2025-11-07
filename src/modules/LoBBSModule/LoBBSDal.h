@@ -5,6 +5,11 @@
 #include <stdint.h>
 #include <vector>
 
+struct LoBBSNewsEntry {
+    meshtastic_LoBBSNews *news;
+    bool isRead;
+};
+
 // Maximum username length (from lobbs.options: meshtastic.LoBBSUser.username max_size:32)
 #define LOBBS_MAX_USERNAME_LEN 32
 #define LOBBS_USERNAME_BUFFER_SIZE (LOBBS_MAX_USERNAME_LEN + 1) // +1 for null terminator
@@ -96,6 +101,27 @@ class LoBBSDal
      * Mark a mail message as read
      */
     bool markMailAsRead(uint64_t mailUuid);
+
+    /**
+     * Post a news item
+     */
+    bool postNews(uint64_t authorUserUuid, const char *message);
+
+    /**
+     * Get news for a user (with read status, sorted unread first then by timestamp desc)
+     * Returns vector of news records - caller must free
+     */
+    std::vector<LoBBSNewsEntry> getNewsForUser(uint64_t userUuid, uint32_t offset, uint32_t limit);
+
+    /**
+     * Check if a news item has been read by a user
+     */
+    bool isNewsReadByUser(uint64_t newsUuid, uint64_t userUuid);
+
+    /**
+     * Mark a news item as read by a user
+     */
+    bool markNewsAsRead(uint64_t newsUuid, uint64_t userUuid);
 
     /**
      * Get the underlying database instance

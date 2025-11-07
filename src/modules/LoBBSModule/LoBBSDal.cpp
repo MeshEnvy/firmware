@@ -2,6 +2,7 @@
 #include "configuration.h"
 #include "gps/RTC.h"
 #include <SHA256.h>
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 
@@ -15,6 +16,15 @@ static void normalizeUsername(const char *username, char *normalized)
         normalized[i] = tolower(username[i]);
     }
     normalized[len] = '\0';
+}
+
+static void buildNewsReadKey(uint64_t newsUuid, uint64_t userUuid, char *out, size_t outSize)
+{
+    char newsHex[17];
+    char userHex[17];
+    lodb_uuid_to_hex(newsUuid, newsHex);
+    lodb_uuid_to_hex(userUuid, userHex);
+    snprintf(out, outSize, "%s:%s", newsHex, userHex);
 }
 
 LoBBSDal::LoBBSDal(uint32_t hostNodeId) : hostNodeId(hostNodeId)
@@ -313,8 +323,8 @@ bool LoBBSDal::markMailAsRead(uint64_t mailUuid)
 
 bool LoBBSDal::postNews(uint64_t authorUserUuid, const char *message)
 {
-    // Generate a unique UUID for the news item (using timestamp and author UUID)
-    lodb_uuid_t newsUuid = lodb_new_uuid((const char *)&authorUserUuid, getTime());
+    // Generate a unique UUID for the news item
+    lodb_uuid_t newsUuid = lodb_new_uuid(nullptr, authorUserUuid ^ (uint64_t)getTime());
 
     // Create news record
     meshtastic_LoBBSNews news = meshtastic_LoBBSNews_init_zero;
@@ -336,8 +346,9 @@ bool LoBBSDal::postNews(uint64_t authorUserUuid, const char *message)
 
 bool LoBBSDal::isNewsReadByUser(uint64_t newsUuid, uint64_t userUuid)
 {
-    // Generate UUID for the read record (combination of news and user)
-    lodb_uuid_t readUuid = lodb_new_uuid((const char *)&newsUuid, userUuid);
+    char key[35];
+    buildNewsReadKey(newsUuid, userUuid, key, sizeof(key));
+    lodb_uuid_t readUuid = lodb_new_uuid(key, 0);
 
     meshtastic_LoBBSNewsRead readRecord = meshtastic_LoBBSNewsRead_init_zero;
     LoDbError err = db->get("news_reads", readUuid, &readRecord);
@@ -346,17 +357,16 @@ bool LoBBSDal::isNewsReadByUser(uint64_t newsUuid, uint64_t userUuid)
 
 bool LoBBSDal::markNewsAsRead(uint64_t newsUuid, uint64_t userUuid)
 {
-    // Check if already marked as read
     if (isNewsReadByUser(newsUuid, userUuid)) {
         LOG_DEBUG("News " LODB_UUID_FMT " already marked as read by user " LODB_UUID_FMT, LODB_UUID_ARGS(newsUuid),
                   LODB_UUID_ARGS(userUuid));
         return true;
     }
 
-    // Generate UUID for the read record
-    lodb_uuid_t readUuid = lodb_new_uuid((const char *)&newsUuid, userUuid);
+    char key[35];
+    buildNewsReadKey(newsUuid, userUuid, key, sizeof(key));
+    lodb_uuid_t readUuid = lodb_new_uuid(key, 0);
 
-    // Create read record
     meshtastic_LoBBSNewsRead readRecord = meshtastic_LoBBSNewsRead_init_zero;
     readRecord.news_uuid = newsUuid;
     readRecord.user_uuid = userUuid;
@@ -372,55 +382,29 @@ bool LoBBSDal::markNewsAsRead(uint64_t newsUuid, uint64_t userUuid)
     return true;
 }
 
-// Comparator for sorting news: unread first, then by timestamp descending
-struct NewsWithReadStatus {
-    meshtastic_LoBBSNews *news;
-    bool isRead;
-};
-
-static int compareNewsByReadAndTimestamp(const void *a, const void *b)
+std::vector<LoBBSNewsEntry> LoBBSDal::getNewsForUser(uint64_t userUuid, uint32_t offset, uint32_t limit)
 {
-    const NewsWithReadStatus *n1 = (const NewsWithReadStatus *)a;
-    const NewsWithReadStatus *n2 = (const NewsWithReadStatus *)b;
-
-    // Unread comes before read
-    if (!n1->isRead && n2->isRead)
-        return -1;
-    if (n1->isRead && !n2->isRead)
-        return 1;
-
-    // Within same read status, sort by timestamp descending (newer first)
-    if (n2->news->timestamp > n1->news->timestamp)
-        return 1;
-    if (n2->news->timestamp < n1->news->timestamp)
-        return -1;
-    return 0;
-}
-
-std::vector<void *> LoBBSDal::getNewsForUser(uint64_t userUuid, uint32_t offset, uint32_t limit)
-{
-    // Get all news items (no filter needed, news is for everyone)
     auto allNews = db->select("news", nullptr, nullptr);
 
-    // Build array with read status
-    std::vector<NewsWithReadStatus> newsWithStatus;
+    std::vector<LoBBSNewsEntry> newsWithStatus;
+    newsWithStatus.reserve(allNews.size());
     for (auto *newsPtr : allNews) {
-        NewsWithReadStatus item;
-        item.news = (meshtastic_LoBBSNews *)newsPtr;
-        item.isRead = isNewsReadByUser(item.news->uuid, userUuid);
-        newsWithStatus.push_back(item);
+        auto *news = (meshtastic_LoBBSNews *)newsPtr;
+        bool isRead = isNewsReadByUser(news->uuid, userUuid);
+        newsWithStatus.push_back({news, isRead});
     }
 
-    // Sort: unread first, then by timestamp descending
-    qsort(newsWithStatus.data(), newsWithStatus.size(), sizeof(NewsWithReadStatus), compareNewsByReadAndTimestamp);
+    std::sort(newsWithStatus.begin(), newsWithStatus.end(), [](const LoBBSNewsEntry &a, const LoBBSNewsEntry &b) {
+        if (a.isRead != b.isRead)
+            return !a.isRead;
+        return a.news->timestamp > b.news->timestamp;
+    });
 
-    // Apply offset and limit
-    std::vector<void *> result;
+    std::vector<LoBBSNewsEntry> result;
     for (size_t i = offset; i < newsWithStatus.size() && i < offset + limit; i++) {
-        result.push_back(newsWithStatus[i].news);
+        result.push_back(newsWithStatus[i]);
     }
 
-    // Free records not included in result
     for (size_t i = 0; i < newsWithStatus.size(); i++) {
         if (i < offset || i >= offset + limit) {
             delete[] (uint8_t *)newsWithStatus[i].news;
