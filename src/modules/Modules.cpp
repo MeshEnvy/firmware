@@ -301,7 +301,6 @@ void setupModules()
     if (moduleConfig.has_range_test && moduleConfig.range_test.enabled)
         new RangeTestModule();
 #endif
-
     // NOTE! This module must be added LAST because it likes to check for replies from other modules and avoid sending extra
     // acks
     routingModule = new RoutingModule();

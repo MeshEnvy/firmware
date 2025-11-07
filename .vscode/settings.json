@@ -8,9 +8,6 @@
   "[cpp]": {
     "editor.defaultFormatter": "trunk.io"
   },
-  "[python]": {
-    "editor.defaultFormatter": "trunk.io"
-  },
   "[powershell]": {
     "editor.defaultFormatter": "ms-vscode.powershell"
   }
