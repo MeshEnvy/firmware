@@ -11,6 +11,7 @@
 #include "FSCommon.h"
 #include "SPILock.h"
 #include "configuration.h"
+#include <string>
 
 // Software SPI is used by MUI so disable SD card here until it's also implemented
 #if defined(HAS_SDCARD) && !defined(SDCARD_USE_SOFT_SPI)
@@ -29,6 +30,87 @@ SPIClass SPI_HSPI(HSPI);
 #endif
 
 #endif // HAS_SDCARD
+
+std::string normalizePath(const char *path)
+{
+    if (path == nullptr || path[0] == '\0')
+    {
+        LOG_DEBUG("No path to normalize");
+        return "/";
+    }
+
+    std::string str(path);
+    if (str.front() != '/')
+    {
+        LOG_DEBUG("Path %s does not start with /, adding /", path);
+        str.insert(str.begin(), '/');
+    }
+
+    std::string cleaned;
+    cleaned.reserve(str.size());
+    bool lastSlash = false;
+    for (char ch : str) {
+        if (ch == '/') {
+            if (!lastSlash)
+                cleaned.push_back('/');
+            lastSlash = true;
+        } else {
+            cleaned.push_back(ch);
+            lastSlash = false;
+        }
+    }
+
+    if (cleaned.empty())
+    {
+        LOG_DEBUG("Cleaned path is empty, setting to /");
+        cleaned = "/";
+    }
+
+    while (cleaned.size() > 1 && cleaned.back() == '/')
+        cleaned.pop_back();
+
+    const std::string result = cleaned.empty() ? "/" : cleaned;
+    LOG_DEBUG("Normalized path is %s", result.c_str());
+    return result;
+}
+
+std::string dirnamePath(const char *path)
+{
+    std::string normalized = normalizePath(path);
+    if (normalized == "/")
+    {
+        LOG_DEBUG("Normalized path is /");
+        return "/";
+    }
+
+    size_t pos = normalized.find_last_of('/');
+    if (pos == std::string::npos || pos == 0)
+    {
+        LOG_DEBUG("Directory name is /");
+        return "/";
+    }
+
+    const std::string result = normalized.substr(0, pos);
+    LOG_DEBUG("Directory name is %s", result.c_str());
+    return result;
+}
+
+void ensureDirectories(const char *path)
+{
+#ifdef FSCom
+    std::string normalized = normalizePath(path);
+    std::string dir = dirnamePath(normalized.c_str());
+    if (dir.empty() || dir == "/")
+    {       
+        LOG_DEBUG("No directories to create for path %s", path);        
+        return;
+    }
+    const bool success = FSCom.mkdir(dir.c_str());
+    if (!success) {
+        LOG_DEBUG("Failed to create directories for path %s", path);
+    }
+#endif
+}
 
 /**
  * @brief Copies a file from one location to another.

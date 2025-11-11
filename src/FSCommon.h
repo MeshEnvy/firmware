@@ -2,6 +2,7 @@
 
 #include "configuration.h"
 #include <vector>
+#include <string>
 
 // Cross platform filesystem API
 
@@ -56,3 +57,7 @@ std::vector<meshtastic_FileInfo> getFiles(const char *dirname, uint8_t levels);
 void listDir(const char *dirname, uint8_t levels, bool del = false);
 void rmDir(const char *dirname);
 void setupSDCard();
+
+std::string normalizePath(const char *path);
+std::string dirnamePath(const char *path);
+void ensureDirectories(const char *path);
