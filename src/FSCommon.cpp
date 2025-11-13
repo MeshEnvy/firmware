@@ -33,15 +33,13 @@ SPIClass SPI_HSPI(HSPI);
 
 std::string normalizePath(const char *path)
 {
-    if (path == nullptr || path[0] == '\0')
-    {
+    if (path == nullptr || path[0] == '\0') {
         LOG_DEBUG("No path to normalize");
         return "/";
     }
 
     std::string str(path);
-    if (str.front() != '/')
-    {
+    if (str.front() != '/') {
         LOG_DEBUG("Path %s does not start with /, adding /", path);
         str.insert(str.begin(), '/');
     }
@@ -60,8 +58,7 @@ std::string normalizePath(const char *path)
         }
     }
 
-    if (cleaned.empty())
-    {
+    if (cleaned.empty()) {
         LOG_DEBUG("Cleaned path is empty, setting to /");
         cleaned = "/";
     }
@@ -77,15 +74,13 @@ std::string normalizePath(const char *path)
 std::string dirnamePath(const char *path)
 {
     std::string normalized = normalizePath(path);
-    if (normalized == "/")
-    {
+    if (normalized == "/") {
         LOG_DEBUG("Normalized path is /");
         return "/";
     }
 
     size_t pos = normalized.find_last_of('/');
-    if (pos == std::string::npos || pos == 0)
-    {
+    if (pos == std::string::npos || pos == 0) {
         LOG_DEBUG("Directory name is /");
         return "/";
     }
@@ -100,13 +95,15 @@ void ensureDirectories(const char *path)
 #ifdef FSCom
     std::string normalized = normalizePath(path);
     std::string dir = dirnamePath(normalized.c_str());
-    if (dir.empty() || dir == "/")
-    {       
-        LOG_DEBUG("No directories to create for path %s", path);        
+    LOG_DEBUG("Directories to create for path %s are %s", path, dir.c_str());
+    if (dir.empty() || dir == "/") {
+        LOG_DEBUG("No directories to create for path %s", path);
         return;
     }
     const bool success = FSCom.mkdir(dir.c_str());
-    if (!success) {
+    if (success) {
+        LOG_DEBUG("Successfully created directories for path %s", path);
+    } else {
         LOG_DEBUG("Failed to create directories for path %s", path);
     }
 #endif
