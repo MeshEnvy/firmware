@@ -13,7 +13,6 @@ void init_dynamic_modules();
 #include "input/UpDownInterruptImpl1.h"
 #include "input/i2cButton.h"
 #include "modules/SystemCommandsModule.h"
-
 #if HAS_TRACKBALL
 #include "input/TrackballInterruptImpl1.h"
 #endif
