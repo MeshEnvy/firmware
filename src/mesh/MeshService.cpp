@@ -20,6 +20,9 @@
 #include "power.h"
 #include <assert.h>
 #include <string>
+#ifdef LOTATO_ENABLED
+#include <Lotato.h>
+#endif
 
 #if ARCH_PORTDUINO
 #include "PortduinoGlue.h"
@@ -117,6 +120,10 @@ int MeshService::handleFromRadio(const meshtastic_MeshPacket *mp)
 /// Do idle processing (mostly processing messages which have been queued from the radio)
 void MeshService::loop()
 {
+#ifdef LOTATO_ENABLED
+    Lotato::delegate().service();
+#endif
+
     if (lastQueueStatus.free == 0) { // check if there is now free space in TX queue
         meshtastic_QueueStatus qs = router->getQueueStatus();
         if (qs.free != lastQueueStatus.free)

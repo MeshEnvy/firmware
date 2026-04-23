@@ -13,6 +13,9 @@
 
 #include "FSCommon.h"
 #include "Led.h"
+#ifdef LOTATO_ENABLED
+#include <Lotato.h>
+#endif
 #include "RTC.h"
 #include "SPILock.h"
 #include "Throttle.h"
@@ -949,6 +952,11 @@ void setup()
 #endif
     service = new MeshService();
     service->init();
+
+#ifdef LOTATO_ENABLED
+    Lotato::init(&FSCom, nodeDB->getNodeNum(),
+                 owner.public_key.size == 32 ? owner.public_key.bytes : nullptr);
+#endif
 
     // Now that the mesh service is created, create any modules
     setupModules();
