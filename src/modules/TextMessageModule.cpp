@@ -18,7 +18,11 @@ ProcessMessage TextMessageModule::handleReceived(const meshtastic_MeshPacket &mp
 #endif
 
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
-    if (Lotato::delegate().handleTextCommandIfMine(mp)) {
+    LOG_INFO("lotato: TextMessageModule -> handleTextCommandIfMine from=0x%08x id=0x%x portnum=%d len=%u",
+             mp.from, mp.id, (int)p.portnum, (unsigned)p.payload.size);
+    bool consumed = Lotato::delegate().handleTextCommandIfMine(mp);
+    LOG_INFO("lotato: handleTextCommandIfMine -> %s", consumed ? "STOP" : "CONTINUE");
+    if (consumed) {
         return ProcessMessage::STOP;
     }
 #endif

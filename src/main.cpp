@@ -231,6 +231,36 @@ std::pair<uint8_t, TwoWire *> nodeTelemetrySensorsMap[_meshtastic_TelemetrySenso
 
 Router *router = NULL; // Users of router don't care what sort of subclass implements that API
 
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
+extern "C" uint32_t lotato_meshtastic_self_nodenum(void)
+{
+    return nodeDB ? nodeDB->getNodeNum() : 0;
+}
+
+extern "C" void lotato_meshtastic_send_text_reply(uint32_t to, const char *text, unsigned len)
+{
+    if (!router || !service || !text || len == 0) {
+        LOG_WARN("lotato: send_text_reply skipped router=%p service=%p text=%p len=%u", router, service, text, len);
+        return;
+    }
+    meshtastic_MeshPacket *p = router->allocForSending();
+    if (!p) {
+        LOG_WARN("lotato: send_text_reply allocForSending returned null");
+        return;
+    }
+    p->to = to;
+    p->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+    p->want_ack = false;
+    unsigned cap = (unsigned)sizeof(p->decoded.payload.bytes);
+    if (len > cap)
+        len = cap;
+    memcpy(p->decoded.payload.bytes, text, len);
+    p->decoded.payload.size = (uint16_t)len;
+    LOG_INFO("lotato: send_text_reply to=0x%08x id=0x%x len=%u preview=\"%.40s\"", to, p->id, len, text);
+    service->sendToMesh(p, RX_SRC_LOCAL, true);
+}
+#endif
+
 const char *firmware_version = optstr(APP_VERSION_SHORT);
 
 const char *getDeviceName()
@@ -956,6 +986,10 @@ void setup()
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
     Lotato::init(&FSCom, nodeDB->getNodeNum(),
                  owner.public_key.size == 32 ? owner.public_key.bytes : nullptr);
+#if (defined(MESHTASTIC_EXCLUDE_BLUETOOTH) && MESHTASTIC_EXCLUDE_BLUETOOTH) || defined(CONFIG_IDF_TARGET_ESP32S2)
+    extern "C" void lotato_meshtastic_start_lofi_after_ble(void);
+    lotato_meshtastic_start_lofi_after_ble();
+#endif
 #endif
 
     // Now that the mesh service is created, create any modules
