@@ -9,8 +9,13 @@
 // Fork-native includes. THIS is the fence: meshtastic_MeshPacket / meshtastic_User only exist
 // inside this TU in the lotato+lo-star integration. The lostar POD types below never coexist
 // with these in any other TU.
+#include "gps/RTC.h"
 #include "mesh/MeshService.h"
 #include "mesh/NodeDB.h"
+#if HAS_WIFI && !defined(ARCH_PORTDUINO)
+#include "mesh/wifi/WiFiAPClient.h"
+#endif
+#include "mesh/RadioInterface.h"
 #include "mesh/Router.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
 
@@ -23,15 +28,52 @@
 #include <lostar/Host.h>
 #include <lostar/Router.h>
 #include <lostar/Types.h>
+#include <lomessage/Queue.h>
 #include <louser/Engine.h>
 #include <louser/Guard.h>
 #include <louser/LoUser.h>
+
+#include <cstdlib>
 
 // Fork globals from meshtastic/src/main.cpp and friends.
 extern MeshService *service;
 extern Router      *router;
 
 namespace {
+
+/*
+ * CLI reply chunking — `lomessage` split budget (adapter-specific).
+ *
+ * Meshtastic caps the *encoded* `meshtastic_Data` blob in `Router::perhapsEncode`:
+ *   numbytes + MESHTASTIC_HEADER_LENGTH <= MAX_LORA_PAYLOAD_LEN   (channel crypto)
+ *   numbytes + MESHTASTIC_HEADER_LENGTH + MESHTASTIC_PKC_OVERHEAD <= MAX_LORA_PAYLOAD_LEN   (PKI)
+ *
+ * `meshtastic_Constants_DATA_PAYLOAD_LEN` (233) is the protobuf *field* max for `payload.bytes`,
+ * not “guaranteed safe UTF-8 length after framing,” so we derive a plaintext budget from the
+ * radio constants and a conservative protobuf slack.
+ *
+ * Override from PlatformIO: -DLOTATO_MT_CLI_REPLY_CHUNK_BYTES=180
+ *                            -DLOTATO_MT_CLI_REPLY_INTER_CHUNK_MS=300
+ */
+#if defined(LOTATO_MT_CLI_REPLY_CHUNK_BYTES)
+constexpr size_t kMtCliReplyChunkBytes = (size_t)LOTATO_MT_CLI_REPLY_CHUNK_BYTES;
+#else
+constexpr size_t kMtMaxEncodedDataPki =
+    (size_t)(MAX_LORA_PAYLOAD_LEN - MESHTASTIC_HEADER_LENGTH - MESHTASTIC_PKC_OVERHEAD);
+/** Nanopb overhead for `Data` (portnum, bitfield, bytes length prefix, etc.) — not exported by upstream. */
+constexpr size_t kMtDataProtobufSlackBytes = 36;
+static_assert(kMtMaxEncodedDataPki > kMtDataProtobufSlackBytes, "meshtastic radio header math");
+constexpr size_t kMtCliReplyChunkBytes = kMtMaxEncodedDataPki - kMtDataProtobufSlackBytes;
+#endif
+
+static_assert(kMtCliReplyChunkBytes > 0 && kMtCliReplyChunkBytes <= meshtastic_Constants_DATA_PAYLOAD_LEN,
+              "CLI reply chunk must fit Data.payload capacity");
+
+#if defined(LOTATO_MT_CLI_REPLY_INTER_CHUNK_MS)
+constexpr unsigned long kMtCliReplyInterChunkMs = (unsigned long)LOTATO_MT_CLI_REPLY_INTER_CHUNK_MS;
+#else
+constexpr unsigned long kMtCliReplyInterChunkMs = 250;
+#endif
 
 /* ── Layout sentinels: catch drift between adapter TU and lostar TU compile flavors. ────
  *
@@ -46,17 +88,32 @@ static_assert(sizeof(lostar_host_ops)       == 20,  "lostar_host_ops layout chan
 static_assert(sizeof(lostar_deferred_reply) == 8,   "lostar_deferred_reply layout changed");
 #endif
 
-/* ── host_ops implementation ─────────────────────────────────────────────────────────── */
+/* ── host_ops + single-packet text TX ─────────────────────────────────────────────────
+ *
+ * `perhapsEncode` rejects oversize `Data` with Routing_Error_TOO_LARGE (7). PKI adds 12 bytes
+ * overhead, so keep per-chunk text well under `meshtastic_Constants_DATA_PAYLOAD_LEN` after
+ * protobuf framing. Long CLI replies (e.g. `help`) must be split — see `g_mt_reply_queue`. */
 
-void mt_send_text_dm(void * /*ctx*/, uint32_t to, const char *text, uint32_t len) {
+/** Unix rx_time for packets we originate. `Router::allocForSending` only sets FromNet-valid time;
+ *  if the radio clock is merely RTCQualityDevice (phone/RTC, no mesh time yet), that is 0 and
+ *  clients render 1969/1970. Fall back like PositionModule-style stamping. */
+static uint32_t mt_packet_rx_time_now() {
+  uint32_t t = getValidTime(RTCQualityFromNet);
+  if (t != 0) return t;
+  t = getValidTime(RTCQualityDevice);
+  if (t != 0) return t;
+  return getTime(false);
+}
+
+static void mt_send_text_one(uint32_t to, const char *text, uint32_t len) {
   if (!router || !service || !text || len == 0) {
-    ::lolog::LoLog::warn("lostar.mt", "send_text_dm skipped router=%p service=%p text=%p len=%u",
+    ::lolog::LoLog::warn("lostar.mt", "send_text_one skipped router=%p service=%p text=%p len=%u",
                          router, service, text, (unsigned)len);
     return;
   }
   meshtastic_MeshPacket *p = router->allocForSending();
   if (!p) {
-    ::lolog::LoLog::warn("lostar.mt", "send_text_dm allocForSending returned null");
+    ::lolog::LoLog::warn("lostar.mt", "send_text_one allocForSending returned null");
     return;
   }
   p->to                 = to;
@@ -66,8 +123,35 @@ void mt_send_text_dm(void * /*ctx*/, uint32_t to, const char *text, uint32_t len
   if (len > cap) len = cap;
   memcpy(p->decoded.payload.bytes, text, len);
   p->decoded.payload.size = (uint16_t)len;
+  p->rx_time              = mt_packet_rx_time_now();
   service->sendToMesh(p, RX_SRC_LOCAL, true);
 }
+
+void mt_send_text_dm(void * /*ctx*/, uint32_t to, const char *text, uint32_t len) {
+  mt_send_text_one(to, text, len);
+}
+
+class MeshtasticReplySink : public lomessage::Sink {
+public:
+  lomessage::SendResult sendChunk(const uint8_t *data, size_t len, size_t /*chunk_idx*/,
+                                  size_t /*total_chunks*/, bool /*is_final*/,
+                                  void *user_ctx) override {
+    if (!data || len == 0 || !user_ctx) return lomessage::SendResult::Abandon;
+    uint32_t to = 0;
+    std::memcpy(&to, user_ctx, sizeof(to));
+    char tmp[meshtastic_Constants_DATA_PAYLOAD_LEN + 1];
+    if (len > sizeof(tmp) - 1) len = sizeof(tmp) - 1;
+    std::memcpy(tmp, data, len);
+    tmp[len] = '\0';
+    mt_send_text_one(to, tmp, (uint32_t)len);
+    return lomessage::SendResult::Sent;
+  }
+};
+
+lomessage::Queue       g_mt_reply_queue;
+MeshtasticReplySink    g_mt_reply_sink;
+
+static bool mt_reply_queue_busy(void * /*ctx*/) { return !g_mt_reply_queue.empty(); }
 
 uint32_t mt_self_nodenum(void * /*ctx*/) {
   return nodeDB ? nodeDB->getNodeNum() : 0;
@@ -86,7 +170,33 @@ int mt_self_pubkey(void * /*ctx*/, uint8_t out[32]) {
 
 void mt_fire_reply(void *route_ctx, const char *text, uint32_t len) {
   const uint32_t to = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(route_ctx));
-  mt_send_text_dm(nullptr, to, text, len);
+  if (!text || len == 0 || !router || !service) return;
+
+  if (len <= kMtCliReplyChunkBytes) {
+    mt_send_text_one(to, text, len);
+    return;
+  }
+
+  char *buf = (char *)std::malloc(len + 1);
+  if (!buf) {
+    mt_send_text_one(to, "Err - OOM", 9);
+    return;
+  }
+  std::memcpy(buf, text, len);
+  buf[len] = '\0';
+
+  lomessage::Options opts;
+  opts.max_chunk            = kMtCliReplyChunkBytes;
+  opts.inter_chunk_delay_ms = kMtCliReplyInterChunkMs;
+  opts.split_flags          = lomessage::CHUNK_ABSORB_LINE_BOUNDARY;
+
+  uint32_t to_blob = to;
+  if (!g_mt_reply_queue.send(buf, &to_blob, sizeof(to_blob), opts, millis())) {
+    std::free(buf);
+    mt_send_text_one(to, "Err - reply queue", 17);
+    return;
+  }
+  std::free(buf);
 }
 
 /* ── guard policy (mirrors the pre-refactor MeshtasticDelegate attach_meshtastic_guards) ─ */
@@ -140,6 +250,8 @@ void lostar_mt_install(lofs::FSys *internal_fs, uint32_t /*self_node_num*/,
   lotato::init(LOSTAR_PROTOCOL_MESHTASTIC, internal_fs);
   louser::init();
   apply_core_policy();
+
+  lostar_register_busy_hint(&mt_reply_queue_busy, nullptr);
 }
 
 void lostar_mt_start_wifi_after_ble() {
@@ -147,6 +259,45 @@ void lostar_mt_start_wifi_after_ble() {
   g_wifi_begun = true;
   lofi::init();
   apply_wifi_policy();
+  lostar_mt_sync_wifi_from_meshtastic_config();
+}
+
+void lostar_mt_sync_wifi_from_meshtastic_config() {
+#if HAS_WIFI && !defined(ARCH_PORTDUINO)
+  if (!config.has_network) return;
+  const auto &n = config.network;
+  if (n.wifi_enabled && n.wifi_ssid[0]) {
+    lofi::Lofi::instance().saveWifiConnect(n.wifi_ssid, n.wifi_psk[0] ? n.wifi_psk : "");
+  } else {
+    lofi::Lofi::instance().saveWifiConnect("", "");
+  }
+  if (wifiReconnect) {
+    needReconnect = true;
+    wifiReconnect->setIntervalFromNow(100);
+  }
+#endif
+}
+
+extern "C" void lofi_on_lo_settings_changed_platform(void) {
+#if HAS_WIFI && !defined(ARCH_PORTDUINO)
+  if (!nodeDB) return;
+  char ssid[33]{};
+  char psk[65]{};
+  lofi::Lofi::instance().getActiveCredentials(ssid, sizeof(ssid), psk, sizeof(psk));
+  config.has_network = true;
+  if (ssid[0] != '\0') {
+    config.network.wifi_enabled = true;
+    strncpy(config.network.wifi_ssid, ssid, sizeof(config.network.wifi_ssid) - 1);
+    config.network.wifi_ssid[sizeof(config.network.wifi_ssid) - 1] = '\0';
+    strncpy(config.network.wifi_psk, psk, sizeof(config.network.wifi_psk) - 1);
+    config.network.wifi_psk[sizeof(config.network.wifi_psk) - 1] = '\0';
+  } else {
+    config.network.wifi_enabled = false;
+    config.network.wifi_ssid[0] = '\0';
+    config.network.wifi_psk[0] = '\0';
+  }
+  nodeDB->saveToDisk(SEGMENT_CONFIG);
+#endif
 }
 
 bool lostar_mt_on_text(const meshtastic_MeshPacket &mp) {
@@ -206,6 +357,7 @@ void lostar_mt_on_advert(const meshtastic_MeshPacket &mp, const meshtastic_User 
 
 void lostar_mt_tick() {
   if (!g_installed) return;
+  g_mt_reply_queue.service(millis(), g_mt_reply_sink);
   lostar_tick();
 }
 

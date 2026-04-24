@@ -25,7 +25,8 @@ typedef struct _meshtastic_User meshtastic_User;
  *        installs `lostar_host_ops` (send_text_dm, self_nodenum, self_pubkey), runs
  *        `lotato::init()` then `louser::init()`, applies the non-wifi meshtastic guard policy.
  *   2. `lostar_mt_start_wifi_after_ble()` from `main-esp32.cpp:setBluetoothEnable(true)` (or
- *        directly for BLE-less builds): runs `lofi::init()` and attaches wifi guard policy.
+ *        directly for BLE-less builds): runs `lofi::init()`, syncs `config.network` into lofi via
+ *        `lostar_mt_sync_wifi_from_meshtastic_config()`, and attaches wifi guard policy.
  *   3. Per-event hooks (called from the fork's normal places):
  *        - `lostar_mt_on_text(mp)`  — from `TextMessageModule::handleReceived`
  *        - `lostar_mt_on_advert(mp, user)` — from `NodeInfoModule::handleReceivedProtobuf`
@@ -37,6 +38,18 @@ void lostar_mt_install(lofs::FSys *internal_fs, uint32_t self_node_num,
 /** Start lofi (WiFi + wifi CLI engine) and apply wifi guard policy. Must run after NimBLE::init
  *  on ESP32 when BT is enabled; safe to call unconditionally on BLE-less builds. Idempotent. */
 void lostar_mt_start_wifi_after_ble();
+
+/**
+ * Mirror Meshtastic `config.network` WiFi fields into lofi (`saveWifiConnect`) for HTTP and `wifi status`.
+ * Does not call `WiFi.begin` (Meshtastic owns STA). When `HAS_WIFI` and the reconnect task exists,
+ * nudges WiFi reconnect so admin updates apply without reboot.
+ *
+ * The reverse path is `lofi_on_lo_settings_changed` → weak `lofi_on_lo_settings_changed_platform`
+ * (strong in `lostar_adapter.cpp`): lofi active SSID/PSK are copied into `config.network`,
+ * `config.has_network` set, and `nodeDB->saveToDisk(SEGMENT_CONFIG)` so Meshtastic admin matches
+ * after `wifi connect` / `wifi forget` / `config set lofi.active.*`.
+ */
+void lostar_mt_sync_wifi_from_meshtastic_config(void);
 
 /** Route a text-DM mesh packet through lostar. Returns true if consumed (host should STOP). */
 bool lostar_mt_on_text(const meshtastic_MeshPacket &mp);

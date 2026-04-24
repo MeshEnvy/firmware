@@ -15,6 +15,9 @@
 #if defined(ARCH_ESP32) && !MESHTASTIC_EXCLUDE_WIFI
 #include "WiFiOTA.h"
 #endif
+#if defined(ARCH_ESP32) && defined(LOTATO_PLATFORM_MESHTASTIC)
+#include "lostar_adapter.h"
+#endif
 #include "Router.h"
 #include "configuration.h"
 #include "main.h"
@@ -695,6 +698,9 @@ void AdminModule::handleSetConfig(const meshtastic_Config &c)
         LOG_INFO("Set config: WiFi");
         config.has_network = true;
         config.network = c.payload_variant.network;
+#if defined(ARCH_ESP32) && defined(LOTATO_PLATFORM_MESHTASTIC) && HAS_WIFI && !defined(ARCH_PORTDUINO)
+        lostar_mt_sync_wifi_from_meshtastic_config();
+#endif
         break;
     case meshtastic_Config_display_tag:
         LOG_INFO("Set config: Display");
