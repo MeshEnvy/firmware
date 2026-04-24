@@ -6,7 +6,7 @@
 #include "configuration.h"
 #include "graphics/Screen.h"
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
-#include <Lotato.h>
+#include "lostar_adapter.h"
 #endif
 TextMessageModule *textMessageModule;
 
@@ -18,11 +18,7 @@ ProcessMessage TextMessageModule::handleReceived(const meshtastic_MeshPacket &mp
 #endif
 
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
-    LOG_INFO("lotato: TextMessageModule -> handleTextCommandIfMine from=0x%08x id=0x%x portnum=%d len=%u",
-             mp.from, mp.id, (int)p.portnum, (unsigned)p.payload.size);
-    bool consumed = Lotato::delegate().handleTextCommandIfMine(mp);
-    LOG_INFO("lotato: handleTextCommandIfMine -> %s", consumed ? "STOP" : "CONTINUE");
-    if (consumed) {
+    if (lostar_mt_on_text(mp)) {
         return ProcessMessage::STOP;
     }
 #endif

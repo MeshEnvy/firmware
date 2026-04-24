@@ -21,7 +21,7 @@
 #include <assert.h>
 #include <string>
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
-#include <Lotato.h>
+#include "lostar_adapter.h"
 #endif
 
 #if ARCH_PORTDUINO
@@ -121,7 +121,7 @@ int MeshService::handleFromRadio(const meshtastic_MeshPacket *mp)
 void MeshService::loop()
 {
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
-    Lotato::delegate().service();
+    lostar_mt_tick();
 #endif
 
     if (lastQueueStatus.free == 0) { // check if there is now free space in TX queue

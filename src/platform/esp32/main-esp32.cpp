@@ -16,7 +16,7 @@
 #endif
 
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
-extern "C" void lotato_meshtastic_start_lofi_after_ble(void);
+#include "lostar_adapter.h"
 #endif
 
 #include "esp_mac.h"
@@ -55,7 +55,7 @@ void setBluetoothEnable(bool enable)
     // Lotato Lofi starts WiFi; must run only after NimBLE::init when BLE is used (radio coexistence).
     // When Meshtastic skips BLE (e.g. HAS_WIFI + isWifiAvailable), still bring Lofi up once on enable.
     if (enable) {
-        lotato_meshtastic_start_lofi_after_ble();
+        lostar_mt_start_wifi_after_ble();
     }
 #endif
 }

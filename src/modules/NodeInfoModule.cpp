@@ -8,7 +8,7 @@
 #include "main.h"
 #include <Throttle.h>
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
-#include <Lotato.h>
+#include "lostar_adapter.h"
 #endif
 
 NodeInfoModule *nodeInfoModule;
@@ -32,7 +32,7 @@ bool NodeInfoModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, mes
     bool hasChanged = nodeDB->updateUser(getFrom(&mp), p, mp.channel);
 
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
-    Lotato::delegate().onNodeInfo(mp, p);
+    lostar_mt_on_advert(mp, p);
 #endif
 
     bool wasBroadcast = isBroadcast(mp.to);
