@@ -7,7 +7,7 @@
 #include "configuration.h"
 #include "main.h"
 #include <Throttle.h>
-#ifdef LOTATO_ENABLED
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
 #include <Lotato.h>
 #endif
 
@@ -31,7 +31,7 @@ bool NodeInfoModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, mes
 
     bool hasChanged = nodeDB->updateUser(getFrom(&mp), p, mp.channel);
 
-#ifdef LOTATO_ENABLED
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
     Lotato::delegate().onNodeInfo(mp, p);
 #endif
 

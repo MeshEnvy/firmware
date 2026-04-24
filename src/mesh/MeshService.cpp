@@ -20,7 +20,7 @@
 #include "power.h"
 #include <assert.h>
 #include <string>
-#ifdef LOTATO_ENABLED
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
 #include <Lotato.h>
 #endif
 
@@ -120,7 +120,7 @@ int MeshService::handleFromRadio(const meshtastic_MeshPacket *mp)
 /// Do idle processing (mostly processing messages which have been queued from the radio)
 void MeshService::loop()
 {
-#ifdef LOTATO_ENABLED
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
     Lotato::delegate().service();
 #endif
 

@@ -5,6 +5,9 @@
 #include "buzz.h"
 #include "configuration.h"
 #include "graphics/Screen.h"
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
+#include <Lotato.h>
+#endif
 TextMessageModule *textMessageModule;
 
 ProcessMessage TextMessageModule::handleReceived(const meshtastic_MeshPacket &mp)
@@ -12,6 +15,12 @@ ProcessMessage TextMessageModule::handleReceived(const meshtastic_MeshPacket &mp
 #if defined(DEBUG_PORT) && !defined(DEBUG_MUTE)
     auto &p = mp.decoded;
     LOG_INFO("Received text msg from=0x%0x, id=0x%x, msg=%.*s", mp.from, mp.id, p.payload.size, p.payload.bytes);
+#endif
+
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
+    if (Lotato::delegate().handleTextCommandIfMine(mp)) {
+        return ProcessMessage::STOP;
+    }
 #endif
 
     // We only store/display messages destined for us.

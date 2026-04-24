@@ -15,6 +15,10 @@
 #include "mesh/wifi/WiFiAPClient.h"
 #endif
 
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
+extern "C" void lotato_meshtastic_start_lofi_after_ble(void);
+#endif
+
 #include "esp_mac.h"
 #include "meshUtils.h"
 #include "sleep.h"
@@ -47,6 +51,13 @@ void setBluetoothEnable(bool enable)
         // BLE advertising automatically stops when MCU enters light-sleep(?)
         // For deep-sleep, shutdown hardware with nimbleBluetooth->deinit(). Requires reboot to reverse
     }
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
+    // Lotato Lofi starts WiFi; must run only after NimBLE::init when BLE is used (radio coexistence).
+    // When Meshtastic skips BLE (e.g. HAS_WIFI + isWifiAvailable), still bring Lofi up once on enable.
+    if (enable) {
+        lotato_meshtastic_start_lofi_after_ble();
+    }
+#endif
 }
 #else
 void setBluetoothEnable(bool enable) {}

@@ -13,7 +13,7 @@
 
 #include "FSCommon.h"
 #include "Led.h"
-#ifdef LOTATO_ENABLED
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
 #include <Lotato.h>
 #endif
 #include "RTC.h"
@@ -953,7 +953,7 @@ void setup()
     service = new MeshService();
     service->init();
 
-#ifdef LOTATO_ENABLED
+#if defined(LOTATO_PLATFORM_MESHTASTIC)
     Lotato::init(&FSCom, nodeDB->getNodeNum(),
                  owner.public_key.size == 32 ? owner.public_key.bytes : nullptr);
 #endif
