@@ -203,26 +203,13 @@ void mt_fire_reply(void *route_ctx, const char *text, uint32_t len) {
 
 void apply_core_policy() {
   auto &rt = lostar::router();
-  if (auto *eng = rt.engineByName("lotato")) {
-    eng->setGuardFor("pause",    &louser::require_admin);
-    eng->setGuardFor("resume",   &louser::require_admin);
-    eng->setGuardFor("endpoint", &louser::require_admin);
-    eng->setGuardFor("auth",     &louser::require_admin);
-    eng->setGuardFor("ingest",   &louser::require_admin);
-  }
-  if (auto *eng = rt.engineByName("config")) {
-    eng->setGuardFor("set",   &louser::require_admin);
-    eng->setGuardFor("unset", &louser::require_admin);
-  }
+  if (auto *eng = rt.engineByName("lotato")) eng->setRootGuard(&louser::require_admin);
+  if (auto *eng = rt.engineByName("config")) eng->setRootGuard(&louser::require_admin);
 }
 
 void apply_wifi_policy() {
   auto &rt = lostar::router();
-  if (auto *eng = rt.engineByName("wifi")) {
-    eng->setGuardFor("scan",    &louser::require_user);
-    eng->setGuardFor("connect", &louser::require_admin);
-    eng->setGuardFor("forget",  &louser::require_admin);
-  }
+  if (auto *eng = rt.engineByName("wifi")) eng->setRootGuard(&louser::require_admin);
 }
 
 /* ── install state ──────────────────────────────────────────────────────────────────── */
