@@ -3,8 +3,11 @@
 #if defined(ESP32) && defined(LOTATO_PLATFORM_MESHTASTIC)
 
 #include <Arduino.h>
+#include <FS.h>
 #include <cstddef>
 #include <cstring>
+
+#include <lofs/adapters/ArduinoFsVolume.h>
 
 // Fork-native includes. THIS is the fence: meshtastic_MeshPacket / meshtastic_User only exist
 // inside this TU in the lotato+lo-star integration. The lostar POD types below never coexist
@@ -216,12 +219,13 @@ void apply_wifi_policy() {
 
 bool g_installed = false;
 
+static lofs::ArduinoFsVolume s_mt_internal_vol(nullptr);
+
 }  // namespace
 
 /* ── public entry points ────────────────────────────────────────────────────────────── */
 
-void lostar_mt_install(lofs::FSys *internal_fs, uint32_t /*self_node_num*/,
-                       const uint8_t * /*self_pub_key_or_null*/) {
+void lostar_mt_install(fs::FS *internal_fs, uint32_t /*self_node_num*/, const uint8_t * /*self_pub_key_or_null*/) {
   if (g_installed) return;
   g_installed = true;
 
@@ -233,7 +237,12 @@ void lostar_mt_install(lofs::FSys *internal_fs, uint32_t /*self_node_num*/,
   ops.ctx          = nullptr;
   lostar_install_host(&ops);
 
-  lotato::init(LOSTAR_PROTOCOL_MESHTASTIC, internal_fs);
+  lofs::FsVolume *internal_vol = nullptr;
+  if (internal_fs) {
+    s_mt_internal_vol.bindFs(internal_fs);
+    internal_vol = &s_mt_internal_vol;
+  }
+  lotato::init(LOSTAR_PROTOCOL_MESHTASTIC, internal_vol);
   louser::init();
   apply_core_policy();
 

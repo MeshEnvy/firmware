@@ -3,8 +3,6 @@
 #ifdef ESP32
 
 #include <cstdint>
-#include <lofs/FsBackend.h>
-
 // Fork-native protobuf types as forward decls so callers don't have to pull the full pb tree
 // into every TU. The adapter .cpp is the single point in the meshtastic tree where these meet
 // the lostar POD vocabulary.
@@ -13,13 +11,18 @@ typedef struct _meshtastic_MeshPacket meshtastic_MeshPacket;
 struct _meshtastic_User;
 typedef struct _meshtastic_User meshtastic_User;
 
+namespace fs {
+class FS;
+}
+
 /**
  * Fork-local lostar adapter for the meshtastic fork. This is the ONLY TU in the fork that sees
  * both `meshtastic_MeshPacket` and `lostar_*` POD types in the same source file. Every other TU
  * speaks one vocabulary or the other — no ODR hazards.
  *
  * Boot ordering (`lostar_mt_install` from `main.cpp` after `MeshService::init`):
- *   1. Installs `lostar_host_ops`, runs `lotato::init()`, `louser::init()`, core guard policy.
+ *   1. Binds `internal_fs` to an internal `ArduinoFsVolume`, installs `lostar_host_ops`, runs
+ *      `lotato::init(..., FsVolume*)`, `louser::init()`, core guard policy.
  *   2. Runs `lofi::init()`, `lostar_mt_sync_wifi_from_meshtastic_config()`, wifi guard policy.
  *      This fork sets `MESHTASTIC_EXCLUDE_BLUETOOTH` on `esp32_base`; if you re-enable BLE on
  *      ESP32, defer `lofi::init()` until after NimBLE::init (WiFi/BT coexistence) instead of step 2.
@@ -29,8 +32,7 @@ typedef struct _meshtastic_User meshtastic_User;
  *   - `lostar_mt_on_advert(mp, user)` — `NodeInfoModule::handleReceivedProtobuf`
  *   - `lostar_mt_tick()` — `MeshService::loop()`
  */
-void lostar_mt_install(lofs::FSys *internal_fs, uint32_t self_node_num,
-                       const uint8_t *self_pub_key_or_null);
+void lostar_mt_install(fs::FS *internal_fs, uint32_t self_node_num, const uint8_t *self_pub_key_or_null);
 
 /**
  * Mirror Meshtastic `config.network` WiFi fields into lofi (`saveWifiConnect`) for HTTP and `wifi status`.
