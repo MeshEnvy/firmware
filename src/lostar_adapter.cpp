@@ -275,19 +275,35 @@ extern "C" void lofi_on_lo_settings_changed_platform(void) {
   char ssid[33]{};
   char psk[65]{};
   lofi::Lofi::instance().getActiveCredentials(ssid, sizeof(ssid), psk, sizeof(psk));
+  
+  bool changed = false;
+  if (!config.has_network) changed = true;
   config.has_network = true;
+  
   if (ssid[0] != '\0') {
+    if (!config.network.wifi_enabled) changed = true;
     config.network.wifi_enabled = true;
+    if (strncmp(config.network.wifi_ssid, ssid, sizeof(config.network.wifi_ssid)) != 0) changed = true;
     strncpy(config.network.wifi_ssid, ssid, sizeof(config.network.wifi_ssid) - 1);
     config.network.wifi_ssid[sizeof(config.network.wifi_ssid) - 1] = '\0';
+    
+    if (strncmp(config.network.wifi_psk, psk, sizeof(config.network.wifi_psk)) != 0) changed = true;
     strncpy(config.network.wifi_psk, psk, sizeof(config.network.wifi_psk) - 1);
     config.network.wifi_psk[sizeof(config.network.wifi_psk) - 1] = '\0';
   } else {
+    if (config.network.wifi_enabled) changed = true;
     config.network.wifi_enabled = false;
+    
+    if (config.network.wifi_ssid[0] != '\0') changed = true;
     config.network.wifi_ssid[0] = '\0';
+    
+    if (config.network.wifi_psk[0] != '\0') changed = true;
     config.network.wifi_psk[0] = '\0';
   }
-  nodeDB->saveToDisk(SEGMENT_CONFIG);
+  
+  if (changed) {
+    nodeDB->saveToDisk(SEGMENT_CONFIG);
+  }
 #endif
 }
 
