@@ -214,8 +214,7 @@ void apply_wifi_policy() {
 
 /* ── install state ──────────────────────────────────────────────────────────────────── */
 
-bool g_installed   = false;
-bool g_wifi_begun  = false;
+bool g_installed = false;
 
 }  // namespace
 
@@ -239,11 +238,7 @@ void lostar_mt_install(lofs::FSys *internal_fs, uint32_t /*self_node_num*/,
   apply_core_policy();
 
   lostar_register_busy_hint(&mt_reply_queue_busy, nullptr);
-}
 
-void lostar_mt_start_wifi_after_ble() {
-  if (g_wifi_begun) return;
-  g_wifi_begun = true;
   lofi::init();
   apply_wifi_policy();
   lostar_mt_sync_wifi_from_meshtastic_config();

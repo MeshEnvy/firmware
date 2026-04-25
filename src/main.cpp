@@ -13,9 +13,6 @@
 
 #include "FSCommon.h"
 #include "Led.h"
-#if defined(LOTATO_PLATFORM_MESHTASTIC)
-#include <Lotato.h>
-#endif
 #include "RTC.h"
 #include "SPILock.h"
 #include "Throttle.h"
@@ -960,9 +957,6 @@ void setup()
 #if defined(LOTATO_PLATFORM_MESHTASTIC)
     lostar_mt_install(&FSCom, nodeDB->getNodeNum(),
                       owner.public_key.size == 32 ? owner.public_key.bytes : nullptr);
-#if (defined(MESHTASTIC_EXCLUDE_BLUETOOTH) && MESHTASTIC_EXCLUDE_BLUETOOTH) || defined(CONFIG_IDF_TARGET_ESP32S2)
-    lostar_mt_start_wifi_after_ble();
-#endif
 #endif
 
     // Now that the mesh service is created, create any modules

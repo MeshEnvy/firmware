@@ -18,26 +18,19 @@ typedef struct _meshtastic_User meshtastic_User;
  * both `meshtastic_MeshPacket` and `lostar_*` POD types in the same source file. Every other TU
  * speaks one vocabulary or the other — no ODR hazards.
  *
- * Boot ordering is split so WiFi (lofi) can be deferred until after NimBLE::init on ESP32
- * (BT/WiFi coexistence):
+ * Boot ordering (`lostar_mt_install` from `main.cpp` after `MeshService::init`):
+ *   1. Installs `lostar_host_ops`, runs `lotato::init()`, `louser::init()`, core guard policy.
+ *   2. Runs `lofi::init()`, `lostar_mt_sync_wifi_from_meshtastic_config()`, wifi guard policy.
+ *      This fork sets `MESHTASTIC_EXCLUDE_BLUETOOTH` on `esp32_base`; if you re-enable BLE on
+ *      ESP32, defer `lofi::init()` until after NimBLE::init (WiFi/BT coexistence) instead of step 2.
  *
- *   1. `lostar_mt_install(fs, self_node_num, self_pub_key)` from `main.cpp` early in setup:
- *        installs `lostar_host_ops` (send_text_dm, self_nodenum, self_pubkey), runs
- *        `lotato::init()` then `louser::init()`, applies the non-wifi meshtastic guard policy.
- *   2. `lostar_mt_start_wifi_after_ble()` from `main-esp32.cpp:setBluetoothEnable(true)` (or
- *        directly for BLE-less builds): runs `lofi::init()`, syncs `config.network` into lofi via
- *        `lostar_mt_sync_wifi_from_meshtastic_config()`, and attaches wifi guard policy.
- *   3. Per-event hooks (called from the fork's normal places):
- *        - `lostar_mt_on_text(mp)`  — from `TextMessageModule::handleReceived`
- *        - `lostar_mt_on_advert(mp, user)` — from `NodeInfoModule::handleReceivedProtobuf`
- *        - `lostar_mt_tick()` — from `MeshService::loop()`
+ * Per-event hooks (fork’s normal call sites):
+ *   - `lostar_mt_on_text(mp)` — `TextMessageModule::handleReceived`
+ *   - `lostar_mt_on_advert(mp, user)` — `NodeInfoModule::handleReceivedProtobuf`
+ *   - `lostar_mt_tick()` — `MeshService::loop()`
  */
 void lostar_mt_install(lofs::FSys *internal_fs, uint32_t self_node_num,
                        const uint8_t *self_pub_key_or_null);
-
-/** Start lofi (WiFi + wifi CLI engine) and apply wifi guard policy. Must run after NimBLE::init
- *  on ESP32 when BT is enabled; safe to call unconditionally on BLE-less builds. Idempotent. */
-void lostar_mt_start_wifi_after_ble();
 
 /**
  * Mirror Meshtastic `config.network` WiFi fields into lofi (`saveWifiConnect`) for HTTP and `wifi status`.
